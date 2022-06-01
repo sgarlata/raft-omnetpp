@@ -1,0 +1,3 @@
+message LeaderElection {
+    int leaderId;
+}
