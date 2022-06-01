@@ -7,12 +7,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <omnetpp.h>
-#include "Ping_m.h"
-#include "LeaderElection_m.h"
 #include <algorithm>
 #include <list>
 #include <random>
 #include <sstream>
+//message list
+#include "Ping_m.h"
+#include "LeaderElection_m.h"
+#include "HeartBeats_m.h"
+#include "VoteReply_m.h"
+#include "VoteRequest_m.h"
 
 using namespace omnetpp;
 
@@ -21,6 +25,9 @@ class Server: public cSimpleModule{
     //sto estendendo la classe c simple module da cui eredito tutti i metodi, tra cui ad esempio il metodo get name
     private:
     cMessage *initPingMessage;
+    cMessage *electionTimeoutExpired;//this will be a self message
+
+
     enum stateEnum {FOLLOWER, LEADER, NULLPT, UNDERELECTION};
     int serverStatus;// this variable contains each server status that could be follower, leader, under election or not reachable.
     int serverNumber;
