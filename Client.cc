@@ -12,6 +12,7 @@
 #include <list>
 #include <random>
 #include <sstream>
+#include "LogMessage_m.h"
 
 using namespace omnetpp;
 
@@ -23,8 +24,8 @@ class Client: public cSimpleModule{
         virtual void initialize() override;
         virtual void handleMessage(cMessage *msg) override;
         virtual void finish() override;
+        virtual LogMessage* generateMessageForLog(int number, char operations);//this method is useful to generate a message that a client have to send to the log in the leader server
 };
-
 
 Define_Module(Client);
 
@@ -58,8 +59,11 @@ void Client::handleMessage(cMessage *msg){
     Ping *pong = dynamic_cast<Ping*>(msg);
 
      if (pong != nullptr){
+         int execIndx = pong->getExecIndex();
 
         bubble("message from server received");
+        int leaderServerId = pong->getLeaderId();
+        delete pong;
 
         for (cModule::GateIterator i(this); !i.end(); i++) {
             cGate *gate = *i;
@@ -67,11 +71,15 @@ void Client::handleMessage(cMessage *msg){
             const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
             std::string ex = "server";
 
-            if (name == ex && h == 2) {
+            // execIndx == h perchè è solo il leader a pingare i/il client e quindi l'index del server salvato in h
+            // deve essere uguale all'index del server che mi ha mandato il messaggio
+            if (name == ex && execIndx == h) {
+                //QUI ANZICHE' IL PONG DOVRANNO ESSERE INVIATI I MESSAGGI PER IL LOG
+                //CHE SONO STATI CREATI GRAZIE ALLA generateMessageForLog
                 EV << "Sending to server[" + std::to_string((gate)->getPathEndGate()->getOwnerModule()->getIndex()) + "] a ping message...\n";
                 Ping *pong = new Ping("ping");
                 pong->setClientIndex(this->getIndex());
-                pong->setExecIndex((gate)->getPathEndGate()->getOwnerModule()->getIndex());
+                pong->setExecIndex(leaderServerId);
                 send(pong,gate->getName(),gate->getIndex());
             }
         }
@@ -79,24 +87,21 @@ void Client::handleMessage(cMessage *msg){
     }
 }
 
+LogMessage* Client::generateMessageForLog(int number, char operations) {
+    //DA RIVEDERE, MANCANO ALCUNE COSE
+    int srcClient = this->getIndex();
+    int num = number;
+    char op = operations;
+
+    LogMessage *logMessage = new LogMessage ("new entry for log");
+    logMessage->setClientId(srcClient);
+    logMessage->setNum(num);
+    logMessage->setOperation(op);
+
+    return logMessage;
+}
+
 void Client::finish() {}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

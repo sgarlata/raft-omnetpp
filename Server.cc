@@ -19,6 +19,7 @@
 #include "HeartBeats_m.h"
 #include "VoteReply_m.h"
 #include "VoteRequest_m.h"
+#include "LogMessage_m.h"
 
 using namespace omnetpp;
 
@@ -57,6 +58,7 @@ class Server: public cSimpleModule{
     virtual void initialize() override;
     virtual void handleMessage(cMessage *msg) override;
     virtual void finish() override;
+    //virtual void sendBroadcastToAllServer();// this method is useful to send broadcast message from one server to all other server
 };
 
 Define_Module(Server);
@@ -173,7 +175,7 @@ void Server::handleMessage(cMessage *msg){
     else if(voteReply != nullptr){//here i received a vote so i increment the current term vote
         //bubble("vote reply received");
         numberVoteReceived = numberVoteReceived + 1;
-        if(numberVoteReceived == 3){
+        if(numberVoteReceived > (serverNumber/2)){//to became a leader a server must have the majority
 
             // if a server becomes leader I have to cancel the timer for a new election since it will
             //remain leader until the first failure
@@ -181,19 +183,27 @@ void Server::handleMessage(cMessage *msg){
 
             bubble("im the leader");
             serverState = LEADER;
-            for (cModule::GateIterator i(this); !i.end(); i++) {// i send in broadcast the heartBeats to all other server
+            // i send in broadcast the heartBeats to all other server and a ping to all the client, in this way every client knows the leader and can send
+            //information that must be saved in the log
+            for (cModule::GateIterator i(this); !i.end(); i++) {
                 cGate *gate = *i;
                 int h = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
                 const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
-                std::string ex = "server";
-
+                std::string server = "server";
                 // to avoid message to client and self message
-                if (h != this->getIndex() && name == ex) {
+                if (h != this->getIndex() && name == server) {
                     HeartBeats *heartBeats = new HeartBeats("im the leader");
                     heartBeats->setLeaderIndex(this->getIndex());
                     send(heartBeats, gate->getName(), gate->getIndex());
-
                 }
+                std::string client = "client";
+                // to send message only to all clients
+                if (name == client) {
+                    Ping *ping = new Ping("im the leader");
+                    ping->setLeaderId(this->getIndex());
+                    send(ping, gate->getName(), gate->getIndex());
+                }
+
             }
             //the leader periodically send an heartBeats
              heartBeatsReminder = new cMessage("heartBeatsReminder");
