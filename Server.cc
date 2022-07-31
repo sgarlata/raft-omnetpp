@@ -31,7 +31,7 @@ class Server: public cSimpleModule{
     cMessage *electionTimeoutExpired;//this will be a self message
     cMessage *heartBeatsReminder; //if the leader receive this autoMessage it send a broadcast heartbeat
 
-    enum stateEnum {FOLLOWER,CANDIDATE,LEADER,NULLPT };
+    enum stateEnum {FOLLOWER,CANDIDATE,LEADER,DEAD};
     stateEnum serverState;// Current state (Follower, Leader or Candidate)
     int messageElectionReceived;
     int serverNumber;
@@ -69,6 +69,7 @@ Define_Module(Server);
 void Server::initialize(){
     //parameter initialization
     serverNumber = getParentModule()->par("numServer");
+    double realProbability = getParentModule()->par("componentDeadProbability");
     currentTerm = 0; // or 1
     alreadyVoted = false;
     serverState = FOLLOWER;
@@ -78,6 +79,16 @@ void Server::initialize(){
         nextIndex.push_back(1);
         matchIndex.push_back(0);
     }
+
+    // We define a probability of death
+        double deadProbability = uniform(0, 1);
+        if (deadProbability < realProb) {
+            double randomDelay = uniform(1, maxDeathStart);
+            //failureMsg = new cMessage("failureMsg");
+            //EV << "Here is client[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
+            //scheduleAt(simTime() + randomDelay, failureMsg);
+        }
+
     //this is a self message
     //here expires the first timeout; so the first server with timeout expired sends the first leader election message
     electionTimeoutExpired = new cMessage("ElectionTimeoutExpired");
@@ -178,11 +189,14 @@ void Server::handleMessage(cMessage *msg){
         if(numberVoteReceived > (serverNumber/2)){//to became a leader a server must have the majority
 
             // if a server becomes leader I have to cancel the timer for a new election since it will
-            //remain leader until the first failure
+            //remain leader until the first failure, furthermore i have to reset all variables used in the election
+            //so i reset here the leader variable, LE ALTRE VARIABILI NON SO DOVE RESETTARLE
             cancelEvent(electionTimeoutExpired);
 
             bubble("im the leader");
             serverState = LEADER;
+            numberVoteReceived = 0;
+            this->alreadyVoted = false;
             // i send in broadcast the heartBeats to all other server and a ping to all the client, in this way every client knows the leader and can send
             //information that must be saved in the log
             for (cModule::GateIterator i(this); !i.end(); i++) {
@@ -203,7 +217,6 @@ void Server::handleMessage(cMessage *msg){
                     ping->setLeaderId(this->getIndex());
                     send(ping, gate->getName(), gate->getIndex());
                 }
-
             }
             //the leader periodically send an heartBeats
              heartBeatsReminder = new cMessage("heartBeatsReminder");
@@ -234,6 +247,9 @@ void Server::handleMessage(cMessage *msg){
                 send(heartBeats, gate->getName(), gate->getIndex());
             }
         }
+        heartBeatsReminder = new cMessage("heartBeatsReminder");
+        double randomTimeout = uniform(0.1, 0.3);
+        scheduleAt(simTime() + randomTimeout, heartBeatsReminder);
     }
 
 
@@ -278,9 +294,7 @@ void Server::handleMessage(cMessage *msg){
 
     else if(msg == initPingMessage){
         //#############################################################################################
-
         //this cycle send a message to only one server linked to client
-
         for (cModule::GateIterator i(this); !i.end(); i++) {
             cGate *gate = *i;
             int h = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
@@ -296,10 +310,7 @@ void Server::handleMessage(cMessage *msg){
                 ping->setExecIndex(this->getIndex());//this is the index of server, in this case the leader
                 ping->setClientIndex((gate)->getPathEndGate()->getOwnerModule()->getIndex());
                 send(ping,gate->getName(),gate->getIndex());
-
-
             }
-
         }
        //#####################################################################################################
     }
