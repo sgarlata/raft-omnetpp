@@ -77,6 +77,8 @@ class Server : public cSimpleModule {
         virtual void handleMessage(cMessage *msg) override;
         virtual void commitLog(log_entry log);
         virtual void updateState(log_entry log);
+        virtual void acceptLog(cGate *leaderGate, int matchIndex);
+        virtual void rejectLog(cGate *leaderGate);
         virtual int min(int a, int b);
         virtual void finish() override;
         //virtual void sendBroadcastToAllServer();// this method is useful to send broadcast message from one server to all other server
@@ -272,24 +274,61 @@ void Server::handleMessage(cMessage *msg) {
             this->alreadyVoted = false;
             cancelEvent(electionTimeoutExpired);
 
-            // CONSISTENCY CHECK + LOG UPDATE (to do)
-            if (heartBeats->getLeaderCurrentTerm() < currentTerm) {
-                cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
-                        heartBeats->getArrivalGate()->getIndex());
-                HeartbeatResponse *reply = new HeartbeatResponse("Leader's term is less than mine");
-                reply->setTerm(currentTerm);
-                reply->setSucceded(false);
-                send(reply, leaderGate->getName(), leaderGate->getIndex());
-            }
-            // If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-            if (heartBeats->getLeaderCommit() > commitIndex) {
-                commitIndex = min(commitIndex, logEntries.size()-1);
-            }
-            // TO ADD: prevLogIndex + prevLovTerm checks
-            // TO ADD: delete existing entry conflicts
-            // TO ADD: append any new entries not already in the log
+            int term = heartBeats->getLeaderCurrentTerm();
+            int prevLogIndex = heartBeats->getPrevLogIndex();
+            int prevLogTerm = heartBeats->getPrevLogTerm();
+            int leaderCommit = heartBeats->getLeaderCommit();
+            cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
+                    heartBeats->getArrivalGate()->getIndex());
 
-            // SET NEW TIMEOUT
+            // @ensure LOG MATCHING PROPERTY
+            // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
+            //                    (2) Reply false if log doesn’t contain an entry at prevLogIndex...
+            //                       whose term matches prevLogTerm
+            if (term < currentTerm or prevLogIndex > logEntries.size() - 1) {
+                rejectLog(leaderGate);
+            }
+            else {
+                if (logEntries.size() > 0) { // if logEntries is empty there is no need to deny
+                    if (logEntries[prevLogIndex].entryTerm != prevLogTerm) { // (2)
+                        rejectLog(leaderGate);
+                    }
+                }
+                else {
+                    // LOG IS ACCEPTED
+                    int newEntryIndex = heartBeats->getEntry().entryLogIndex;
+                    // CASE A: logMessage does not contain any entry, the follower
+                    //         replies to confirm consistency with leader's log
+                    // NOTE: id == 0 is the default value, but it does not correspond to any client
+                    if (heartBeats->getEntry().clientId == 0) {
+                        if (leaderCommit > commitIndex) {
+                            commitIndex = prevLogIndex; // min(leaderCommit, prevLogIndex) == prevLogIndex;
+                        }
+                        acceptLog(leaderGate, prevLogIndex);
+                    }
+                    else { // CASE B: logMessage delivers a new entry for follower's log
+                           // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
+                           // No entry at newEntryIndex, simply append the new entry
+                        if (logEntries.size() - 1 < newEntryIndex) {
+                            logEntries.push_back(heartBeats->getEntry());
+                        }
+                        // @ensure (3): if an existing entry conflicts with a new one (same index but different terms),
+                        //              delete the existing entry and all that follow it
+                        // Conflicting entry at newEntryIndex, delete the last entries up to newEntryIndex, then append the new entry
+                        else if (logEntries[newEntryIndex].entryTerm != term) {
+                            int to_erase = logEntries.size() - newEntryIndex;
+                            logEntries.erase(logEntries.end() - to_erase, logEntries.end());
+                            logEntries.push_back(heartBeats->getEntry());
+                        }
+                        // @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+                        // *index of last
+                        acceptLog(leaderGate, newEntryIndex);
+                    }
+                    if (leaderCommit > commitIndex) {
+                        commitIndex = min(leaderCommit, newEntryIndex);
+                    }
+                }
+            }
             electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
             double randomTimeout = uniform(2, 4);
             scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
@@ -328,7 +367,7 @@ void Server::handleMessage(cMessage *msg) {
             newEntry.operandValue = logMessage->getOperandValue();
             newEntry.operation = logMessage->getOperation();
             logEntries.push_back(newEntry);
-            logEntries[logEntries.size() -1].entryLogIndex = logEntries.size() - 1;
+            logEntries[logEntries.size() - 1].entryLogIndex = logEntries.size() - 1;
 
             // TO DO: send update to followers
         }
@@ -389,6 +428,22 @@ void Server::commitLog(log_entry log) {
     updateState(log);
     logEntries.push_back(log);
     // TO DO: update commit state
+}
+
+void Server::acceptLog(cGate *leaderGate, int matchIndex) {
+    HeartBeatResponse *reply = new HeartBeatResponse("Consistency check: OK");
+    reply->setMatchIndex(matchIndex);
+    reply->setTerm(currentTerm);
+    reply->setSucceded(true);
+    send(reply, leaderGate->getName(), leaderGate->getIndex());
+}
+
+void Server::rejectLog(cGate *leaderGate) {
+    HeartBeatResponse *reply = new HeartBeatResponse("Consistency check: FAIL");
+    reply->setMatchIndex(0);
+    reply->setTerm(currentTerm);
+    reply->setSucceded(false);
+    send(reply, leaderGate->getName(), leaderGate->getIndex());
 }
 
 int Server::min(int a, int b) {
