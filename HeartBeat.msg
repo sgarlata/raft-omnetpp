@@ -13,7 +13,7 @@ message HeartBeats {
     int leaderIndex;
     int leaderCurrentTerm;
     int leaderCommit;
-    int prevLogIndex;	// non è uguale al leader commit, se inviamo un update alla volta?
+    int prevLogIndex;
     int prevLogTerm;	// term of prevLogIndex entry
     // log information can be appended to heartbeat messages (entry)
     log_entry entry; // ??? or entries[] ??? Con una funzione void appendEntry(log_entry newEntry); dovrebbe funzionare

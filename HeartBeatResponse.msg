@@ -1,6 +1,6 @@
 // client notifies log reception 
-message HeartbeatResponse {
+message HeartBeatResponse {
     int term;
-    int logIndex; // index of the entry in the leader's log
+    int matchIndex; // index of the entry in the leader's log
     bool succeded;
 }

@@ -2,7 +2,7 @@
  * server.cc
  *
  *  Created on: 13 mar 2022
- *      Author: ste_dochio, ManfrediComella
+ *      Author: ste_dochio
  */
 #include <stdio.h>
 #include <string.h>

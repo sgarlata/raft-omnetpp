@@ -7,7 +7,7 @@
 using namespace omnetpp;
 
 struct log_entry {
-    int clientId; // ??? forse meglio l'index? ???
+    int clientId = 0; // ??? forse meglio l'index? ???
     int entryLogIndex;
     int entryTerm;
     char operandName;

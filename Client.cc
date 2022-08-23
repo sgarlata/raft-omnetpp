@@ -138,13 +138,12 @@ void Client::handleMessage(cMessage *msg) {
 
 // It sends a log message, under the assumption that the client already knows a leader
 void Client::sendLogMessage(char operation, char varName, int value) {
-
     LogMessage *logMessage = new LogMessage("new entry for log");
+
     logMessage->setClientId(this->getIndex());
     logMessage->setOperandValue(value);
     logMessage->setOperandName(varName);
     logMessage->setOperation(operation);
-
     send(logMessage, (currLeaderOutputGate)->getName(),
             (currLeaderOutputGate)->getIndex());
 }
