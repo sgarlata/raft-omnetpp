@@ -3,6 +3,7 @@
 //sends this message to leader server
 message LogMessage {
     int clientId;
+    int serialNumber;
     char operandName;
     int operandValue;
     char operation; // s == set, a == add, m == mul

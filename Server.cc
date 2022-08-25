@@ -18,6 +18,7 @@
 #include <VoteReply_m.h>
 #include <VoteRequest_m.h>
 #include "LogMessage_m.h"
+#include "LogMessageResponse_m.h"
 #include "HeartBeat_m.h"
 #include "HeartBeatResponse_m.h"
 
@@ -31,10 +32,8 @@ class Server : public cSimpleModule {
         cMessage *heartBeatsReminder; // if the leader receive this autoMessage it send a broadcast heartbeat
         cMessage *failureMsg; // autoMessage to shut down this server
         cMessage *recoveryMsg; // autoMessage to reactivate this server
+        cMessage *applyChangesMsg;
 
-        enum stateEnum {
-            FOLLOWER, CANDIDATE, LEADER, DEAD
-        };
         stateEnum serverState; // Current state (Follower, Leader or Candidate)
         int messageElectionReceived;
         int serverNumber;
@@ -57,8 +56,8 @@ class Server : public cSimpleModule {
         bool iAmDead = false; //it's a boolean useful to shut down server/client
 
         /****** Volatile state on all servers: ******/
-        int commitIndex = 0; // index of highest log entry known to be committed (initialized to 0, increases monotonically)
-        int lastApplied = 0; // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
+        int commitIndex = -1; // index of highest log entry known to be committed (initialized to 0, increases monotonically)
+        int lastApplied = -1; // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
 
         /****** Volatile state on leaders (Reinitialized after election) ******/
         std::vector<int> nextIndex; // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
@@ -75,10 +74,11 @@ class Server : public cSimpleModule {
 
         virtual void initialize() override;
         virtual void handleMessage(cMessage *msg) override;
-        virtual void commitLog(log_entry log);
+        virtual void updateCommitIndex();
         virtual void updateState(log_entry log);
         virtual void acceptLog(cGate *leaderGate, int matchIndex);
         virtual void rejectLog(cGate *leaderGate);
+        virtual void replyToClient(bool succeded, int serialNumber, cGate *clientGate);
         virtual int min(int a, int b);
         virtual void finish() override;
         //virtual void sendBroadcastToAllServer();// this method is useful to send broadcast message from one server to all other server
@@ -100,13 +100,10 @@ void Server::initialize() {
     serverState = FOLLOWER;
     leaderId = -1;
     for (int i = 0; i < serverNumber; ++i) {
-        nextIndex.push_back(1);
+        nextIndex.push_back(0);
         matchIndex.push_back(0);
     }
 
-    for (char ch = 'a'; ch < 'z'; ch++) {
-
-    }
     // We define a probability of death and we start a self message that will "shut down" some nodes
     double deadProbability = uniform(0, 1);
     if (deadProbability < realProbability) {
@@ -124,6 +121,8 @@ void Server::initialize() {
     double randomTimeout = uniform(0.25, 0.7);
     scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
 
+    applyChangesMsg = new cMessage("ApplyChangesToFiniteStateMachine");
+    scheduleAt(simTime() + 1, applyChangesMsg);
 }
 //here i redefine handleMessage method
 //invoked every time a message enters in the node
@@ -133,6 +132,7 @@ void Server::handleMessage(cMessage *msg) {
     VoteRequest *voteRequest = dynamic_cast<VoteRequest*>(msg);
     LeaderElection *leaderElection = dynamic_cast<LeaderElection*>(msg);
     HeartBeats *heartBeats = dynamic_cast<HeartBeats*>(msg);
+    HeartBeatResponse *heartBeatResponse = dynamic_cast<HeartBeatResponse*>(msg);
     LogMessage *logMessage = dynamic_cast<LogMessage*>(msg);
 
     // ############################################### RECOVERY BEHAVIOUR ###############################################
@@ -235,6 +235,12 @@ void Server::handleMessage(cMessage *msg) {
                 serverState = LEADER;
                 numberVoteReceived = 0;
                 this->alreadyVoted = false;
+                for (int i = 0; i < serverNumber; ++i) {
+                    if (logEntries.size() != 0) {
+                        nextIndex[i] = logEntries.size();
+                    } // ELSE: nextIndex == 0, as its initial value
+                    matchIndex[i] = 0;
+                }
                 // i send in broadcast the heartBeats to all other server and a ping to all the client, in this way every client knows the leader and can send
                 //information that must be saved in the log
                 for (cModule::GateIterator i(this); !i.end(); i++) {
@@ -246,6 +252,7 @@ void Server::handleMessage(cMessage *msg) {
                     if (h != this->getIndex() && name == server) {
                         HeartBeats *heartBeats = new HeartBeats("im the leader");
                         heartBeats->setLeaderIndex(this->getIndex());
+                        heartBeats->setLeaderCommit(commitIndex);
                         send(heartBeats, gate->getName(), gate->getIndex());
                     }
                     std::string client = "client";
@@ -267,12 +274,6 @@ void Server::handleMessage(cMessage *msg) {
 
         // HEARTBEAT RECEIVED (AppendEntries RPC)
         else if (heartBeats != nullptr) {
-            // da ottimizzare, qui azzero troppe volte le variabili
-            // CANCEL RUNNING TIMEOUT
-            serverState = FOLLOWER;
-            numberVoteReceived = 0;
-            this->alreadyVoted = false;
-            cancelEvent(electionTimeoutExpired);
 
             int term = heartBeats->getLeaderCurrentTerm();
             int prevLogIndex = heartBeats->getPrevLogIndex();
@@ -281,6 +282,15 @@ void Server::handleMessage(cMessage *msg) {
             cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
                     heartBeats->getArrivalGate()->getIndex());
 
+            // Update server role if an RPC request with a newer term arrives
+            if (currentTerm < term) {
+                serverState = FOLLOWER;
+                cancelEvent(heartBeatsReminder);
+                this->leaderId = heartBeats->getArrivalGate()->getOwnerModule()->getId();
+                this->bubble("I'm following!");
+            }
+            // CANCEL RUNNING TIMEOUT
+            cancelEvent(electionTimeoutExpired);
             // @ensure LOG MATCHING PROPERTY
             // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
             //                    (2) Reply false if log doesn’t contain an entry at prevLogIndex...
@@ -334,17 +344,32 @@ void Server::handleMessage(cMessage *msg) {
             scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
         }
 
+        // SEND HEARTBEAT (AppendEntries RPC)
         else if (msg == heartBeatsReminder) {
-            for (cModule::GateIterator i(this); !i.end(); i++) {
-                cGate *gate = *i;
-                // h represents the follower's index
-                int h = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
+            std::string ex = "server";
+            std::string temp;
+            int lastLogIndex = logEntries.size() - 1;
+            int nextLogIndex;
+            for (cModule::GateIterator iterator(this); !iterator.end(); iterator++) {
+                cGate *gate = *iterator;
+                int followerIndex = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
                 const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
-                std::string ex = "server";
-
+                HeartBeats *heartBeat = new HeartBeats("i'm the leader");
                 // to avoid message to client and self message
-                if (h != this->getIndex() && name == ex) {
-                    HeartBeats *heartBeat = new HeartBeats("i'm the leader");
+                if (followerIndex != this->getIndex() && name == ex) {
+                    nextLogIndex = nextIndex[followerIndex];
+                    heartBeat->setLeaderCommit(commitIndex);
+                    heartBeat->setLeaderIndex(leaderId);
+                    heartBeat->setPrevLogIndex(nextLogIndex - 1);
+                    if (logEntries.size() > 0) {
+                        heartBeat->setPrevLogTerm(logEntries[nextLogIndex - 1].entryTerm);
+                        if (nextLogIndex <= lastLogIndex) {
+                            heartBeat->setEntry(logEntries[nextLogIndex]);
+                        }
+                    }
+                    else {
+                        heartBeat->setPrevLogTerm(0);
+                    }
                     send(heartBeat, gate->getName(), gate->getIndex());
                 }
             }
@@ -353,82 +378,118 @@ void Server::handleMessage(cMessage *msg) {
             scheduleAt(simTime() + randomTimeout, heartBeatsReminder);
         }
 
+        // HEARTBEAT RESPONSE FROM A FOLLOWER
+        else if (heartBeatResponse != nullptr) {
+            int followerIndex = heartBeatResponse->getArrivalGate()->getIndex();
+            int newMatchIndex = heartBeatResponse->getMatchIndex();
+            int term = heartBeatResponse->getTerm();
+            if (currentTerm < term) {
+                if (heartBeatResponse->getSucceded()) {
+                    nextIndex[followerIndex]++;
+                    matchIndex[followerIndex] = newMatchIndex;
+                }
+                else {
+                    nextIndex[followerIndex]--;
+                }
+                updateCommitIndex();
+            }
+            else {
+                // If RPC request or response contains term T > currentTerm:
+                // set currentTerm = T, convert to follower
+                this->leaderId = heartBeatResponse->getId();
+                this->serverState = FOLLOWER;
+                // VERIFICARE SE SERVE ALTRO
+                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
+                double randomTimeout = uniform(2, 4);
+                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+            }
+        }
+
         // LOG MESSAGE REQUEST RECEIVED
         else if (logMessage != nullptr) {
-            // TO ADD: forward to leader in case the message is received by a follower.
-            // If the leader is not known, wait until the new leader is elected and forward
-            // client's req to the new leader. (I guess)
+            int serialNumber = logMessage->getSerialNumber();
+            cGate *clientGate = gateHalf(logMessage->getArrivalGate()->getName(), cGate::OUTPUT,
+                    logMessage->getArrivalGate()->getIndex());
+            // Redirect to leader in case the message is received by a follower.
+            if (this->getId() != leaderId) {
+                logMessage->getSerialNumber();
+                replyToClient(false, serialNumber, clientGate);
+            }
+            else {
+                // once a log message is received a new log entry is added in the leader node
+                // TO DO: check whether the log is already in the queue (serial number check)
+                // If that is the case and the log has already been committed, simply reply with a "success" ACK
+                log_entry newEntry;
+                newEntry.clientId = logMessage->getClientId();
+                newEntry.entryTerm = currentTerm;
+                newEntry.operandName = logMessage->getOperandName();
+                newEntry.operandValue = logMessage->getOperandValue();
+                newEntry.operation = logMessage->getOperation();
+                logEntries.push_back(newEntry);
+                logEntries[logEntries.size() - 1].entryLogIndex = logEntries.size() - 1;
+            }
+        }
 
-            // once a log message is received a new log entry is added in the leader node
-            log_entry newEntry;
-            newEntry.clientId = logMessage->getClientId();
-            newEntry.entryTerm = currentTerm;
-            newEntry.operandName = logMessage->getOperandName();
-            newEntry.operandValue = logMessage->getOperandValue();
-            newEntry.operation = logMessage->getOperation();
-            logEntries.push_back(newEntry);
-            logEntries[logEntries.size() - 1].entryLogIndex = logEntries.size() - 1;
-
-            // TO DO: send update to followers
+        else if (msg == applyChangesMsg) {
+            if (commitIndex > lastApplied) {
+                lastApplied = lastApplied + 1;
+                updateState(logEntries[lastApplied]);
+            }
+            applyChangesMsg = new cMessage("Apply changes to State Machine");
+            scheduleAt(simTime() + 2, applyChangesMsg);
         }
 
     }
-    /*
-     else if (ping != nullptr){
-     EV<<"SONO NEL PING";
-     //rimando il ping al client
-     bubble("message from client received");
-     int clientId = ping->getClientIndex();
-     // provaPerIlPing++;
-
-     //int newIndexx = provaPerIlPing % 3;
-
-     delete ping;
-
-     Ping *ping = new Ping("pong");
-     ping->setExecIndex(newIndexx);
-
-     ping->setClientIndex(clientId);
-
-     for (cModule::GateIterator i(this); !i.end(); i++) {
-     cGate *gate = *i;
-     int h = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
-     const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
-     std::string cl = "client";
-     // To send the msg only to the client chosen, not the exec with same index
-     if (h == ping->getClientIndex() && name == cl) {
-     EV << "\n##################### \n";
-     EV << "... answering to the client[" + std::to_string(ping->getClientIndex()) + "]";
-     EV << "\n##################### \n";
-     send(ping, gate->getName(), gate->getIndex());
-     }
-     }
-     }
-
-     else if(leaderElection != nullptr && messageElectionReceived == 0){
-     bubble("leader election start");
-     delete leaderElection;
-     for (cModule::GateIterator i(this); !i.end(); i++) {
-     cGate *gate = *i;
-     int h = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
-     const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
-     std::string ex = "server";
-
-     // to avoid self msg and msg to client
-     if (h != this->getIndex() && name == ex) {
-     LeaderElection *leaderElection = new LeaderElection("election");
-     send(leaderElection, gate->getName(), gate->getIndex());
-     }
-     }
-     }
-     */
 }
+/*
+ else if (ping != nullptr){
+ EV<<"SONO NEL PING";
+ //rimando il ping al client
+ bubble("message from client received");
+ int clientId = ping->getClientIndex();
+ // provaPerIlPing++;
 
-void Server::commitLog(log_entry log) {
-    updateState(log);
-    logEntries.push_back(log);
-    // TO DO: update commit state
-}
+ //int newIndexx = provaPerIlPing % 3;
+
+ delete ping;
+
+ Ping *ping = new Ping("pong");
+ ping->setExecIndex(newIndexx);
+
+ ping->setClientIndex(clientId);
+
+ for (cModule::GateIterator i(this); !i.end(); i++) {
+ cGate *gate = *i;
+ int h = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
+ const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
+ std::string cl = "client";
+ // To send the msg only to the client chosen, not the exec with same index
+ if (h == ping->getClientIndex() && name == cl) {
+ EV << "\n##################### \n";
+ EV << "... answering to the client[" + std::to_string(ping->getClientIndex()) + "]";
+ EV << "\n##################### \n";
+ send(ping, gate->getName(), gate->getIndex());
+ }
+ }
+ }
+
+ else if(leaderElection != nullptr && messageElectionReceived == 0){
+ bubble("leader election start");
+ delete leaderElection;
+ for (cModule::GateIterator i(this); !i.end(); i++) {
+ cGate *gate = *i;
+ int h = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
+ const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
+ std::string ex = "server";
+
+ // to avoid self msg and msg to client
+ if (h != this->getIndex() && name == ex) {
+ LeaderElection *leaderElection = new LeaderElection("election");
+ send(leaderElection, gate->getName(), gate->getIndex());
+ }
+ }
+ }
+ */
 
 void Server::acceptLog(cGate *leaderGate, int matchIndex) {
     HeartBeatResponse *reply = new HeartBeatResponse("Consistency check: OK");
@@ -446,6 +507,24 @@ void Server::rejectLog(cGate *leaderGate) {
     send(reply, leaderGate->getName(), leaderGate->getIndex());
 }
 
+void Server::replyToClient(bool succeded, int serialNumber, cGate *clientGate) {
+    std::string serNumber = std::to_string(serialNumber);
+    std::string temp;
+
+    if (succeded) {
+        temp = "ACK: " + serNumber;
+    }
+    else {
+        temp = "NACK: " + serNumber;
+    }
+    char const *messageContent = temp.c_str();
+    LogMessageResponse *response = new LogMessageResponse(messageContent);
+    response->setLogSerialNumber(serialNumber);
+    response->setSucceded(succeded);
+    response->setClientId(clientGate->getPathEndGate()->getOwnerModule()->getId());
+    send(response, clientGate->getName(), clientGate->getIndex());
+}
+
 int Server::min(int a, int b) {
     if (a > b)
         return a;
@@ -454,9 +533,26 @@ int Server::min(int a, int b) {
 
 }
 
+// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
+// and log[N].term == currentTerm: set commitIndex = N
+void Server::updateCommitIndex() {
+    int lastLogEntry = logEntries.size() - 1;
+    int counter = 0;
+    int temp;
+    if (lastLogEntry > commitIndex and counter < serverNumber/2) {
+        for (int i = commitIndex + 1; i < lastLogEntry; i++) {
+            temp = std::count(matchIndex.begin(), matchIndex.end(), i);
+            if (temp > serverNumber/2 and logEntries[i].entryTerm == currentTerm) {
+                commitIndex = i;
+            }
+            counter = counter + temp;
+        }
+    }
+}
+
 // Assumption: variables name space is the lower-case alphabet
 void Server::updateState(log_entry log) {
-    // TO ADD: input check and sanitizing
+// TO ADD: input check and sanitizing
     int index = (int) log.operandName - 65;
     if (log.operandName == 'S') {
         variables[index].val = log.operandValue;
