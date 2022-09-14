@@ -3,4 +3,5 @@
 message VoteReply {
     int commonServerIndex;
     int leaderIndex;
+    int currentTerm;
 }

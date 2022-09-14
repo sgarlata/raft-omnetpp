@@ -60,7 +60,7 @@ network Network
         
         server[numServer]: Server {
             parameters:
-                @display("i=,gold");
+                @display("i=,bronze");
         }
     connections:
         
