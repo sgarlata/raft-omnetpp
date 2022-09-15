@@ -96,7 +96,7 @@ Define_Module(Server);
 //here i redefine initialize method
 //invoked at simulation starting time
 void Server::initialize() {
-    WATCH(iAmDead);
+    WATCH(currentTerm);
     serverNumber = getParentModule()->par("numServer");
     double realProbability = getParentModule()->par("serverDeadProbability");
     double maxDeathStart = getParentModule()->par("serverMaxDeathStart");
@@ -169,6 +169,19 @@ void Server::handleMessage(cMessage *msg) {
         electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
         double randomTimeout = uniform(2, 4);
         scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+
+        //here i kill again servers in order to have a simulations where all server continuously goes down
+        double maxDeathStart1 = uniform(1, 10);
+        double realProbability1 = 0.9;
+        double deadProbability1 = uniform(0, 1);
+        if (deadProbability1 < realProbability1) {
+            double randomDelay1 = uniform(1, maxDeathStart1);
+            failureMsg = new cMessage("failureMsg");
+            EV
+                    << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in "
+                            + std::to_string(randomDelay1) + " seconds...\n";
+            scheduleAt(simTime() + randomDelay1, failureMsg);
+        }
     }
 
     else if (iAmDead) {
