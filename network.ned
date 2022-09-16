@@ -39,13 +39,16 @@ network Network
         //this is the number of client that i want to create
         int numClient @prompt("Number of client") = default(1);
 	    //this is the number of server that i want to create
-        int numServer @prompt("Number of server") = default(8); //3
-		double clientsDeadProbability = default(0.8);
-        double serverDeadProbability = default(0.5); // 0.001
+        int numServer @prompt("Number of server") = default(5); 
+		double clientsDeadProbability = default(0.7);
+        double serverDeadProbability = default(0.7); // 0.001
         double clientsMaxDeathStart = default(6);
-		double clientsMaxDeathDuration = default(25);
-		double serverMaxDeathStart = default(25);
-		double serverMaxDeathDuration = default(25);
+		double clientsMaxDeathDuration = default(20);
+		double serverMaxDeathStart = default(20);
+		double serverMaxDeathDuration = default(20);
+		double leaderDeadProbability = default(0.7);
+		double leaderMaxDeathDuration = default(10);
+		double dieAgainProbability = default(0.7);
 	
 	types:
 	    channel myChannel extends ned.DelayChannel{

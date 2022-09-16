@@ -171,8 +171,8 @@ void Server::handleMessage(cMessage *msg) {
         scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
 
         //here i kill again servers in order to have a simulations where all server continuously goes down
-        double maxDeathStart1 = uniform(1, 10);
-        double realProbability1 = 0.9;
+        double maxDeathStart1 = getParentModule()->par("serverMaxDeathStart");
+        double realProbability1 = getParentModule()->par("dieAgainProbability");
         double deadProbability1 = uniform(0, 1);
         if (deadProbability1 < realProbability1) {
             double randomDelay1 = uniform(1, maxDeathStart1);
@@ -287,7 +287,6 @@ void Server::handleMessage(cMessage *msg) {
                     bubble("i'm the leader");
                     cDisplayString& dispStr = getDisplayString();
                     dispStr.parse("i=block/process,gold");
-
                     // if a server becomes leader I have to cancel the timer for a new election since it will
                     //remain leader until the first failure, furthermore i have to reset all variables used in the election
                     //so i reset here the leader variable, LE ALTRE VARIABILI NON SO DOVE RESETTARLE
@@ -296,6 +295,18 @@ void Server::handleMessage(cMessage *msg) {
                     serverState = LEADER;
                     numberVoteReceived = 0;
                     this->alreadyVoted = false;
+                    //for simulation purpose i kill the leader every five seconds
+                    double realLeaderProbability = getParentModule()->par("leaderDeadProbability");
+                    double leaderMaxDeath = getParentModule()->par("leaderMaxDeathDuration");
+                    double leaderDeadProbability = uniform(0, 1);
+                    if (leaderDeadProbability < realLeaderProbability) {
+                        double randomDelay2 = uniform(1, leaderMaxDeath);
+                        failureMsg = new cMessage("failureMsg");
+                        EV
+                                << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in "
+                                        + std::to_string(randomDelay2) + " seconds...\n";
+                        scheduleAt(simTime() + randomDelay2, failureMsg);
+                    }
                     // i send in broadcast the heartBeats to all other server and a ping to all the client, in this way every client knows the leader and can send
                     //information that must be saved in the log
                     for (cModule::GateIterator i(this); !i.end(); i++) {
@@ -489,4 +500,8 @@ void Server::updateState(log_entry log) {
 }
 
 void Server::finish() {
+    cancelAndDelete(failureMsg);
+    cancelAndDelete(recoveryMsg);
+    cancelAndDelete(electionTimeoutExpired);
+    cancelAndDelete(heartBeatsReminder);
 }
