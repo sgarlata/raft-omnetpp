@@ -318,8 +318,9 @@ void Server::handleMessage(cMessage *msg) {
                         if (h != this->getIndex() && name == server) {
                             HeartBeats *heartBeats = new HeartBeats("im the leader");
                             heartBeats->setLeaderIndex(this->getIndex());
+                            heartBeats->setLeaderCurrentTerm(currentTerm);
                             send(heartBeats, gate->getName(), gate->getIndex());
-                              }
+                        }
                                 std::string client = "client";
                             // to send message only to all clients
                             if (name == client) {
@@ -339,74 +340,75 @@ void Server::handleMessage(cMessage *msg) {
 
         // HEARTBEAT RECEIVED (AppendEntries RPC)
         else if (heartBeats != nullptr) {
-            // da ottimizzare, qui azzero troppe volte le variabili
-            // CANCEL RUNNING TIMEOUT
-            cDisplayString& dispStr = getDisplayString();
-            dispStr.parse("i=block/process, bronze");
-            serverState = FOLLOWER;
-            numberVoteReceived = 0;
-            this->alreadyVoted = false;
-            cancelEvent(electionTimeoutExpired);
-
             int term = heartBeats->getLeaderCurrentTerm();
-            int prevLogIndex = heartBeats->getPrevLogIndex();
-            int prevLogTerm = heartBeats->getPrevLogTerm();
-            int leaderCommit = heartBeats->getLeaderCommit();
-            cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
-                                         heartBeats->getArrivalGate()->getIndex());
+            if(term < currentTerm){
+                // CANCEL RUNNING TIMEOUT
+                cancelEvent(electionTimeoutExpired);
+                currentTerm = heartBeats->getLeaderCurrentTerm();
+                cDisplayString& dispStr = getDisplayString();
+                dispStr.parse("i=block/process, bronze");
+                serverState = FOLLOWER;
+                numberVoteReceived = 0;
+                this->alreadyVoted = false;
 
+                int prevLogIndex = heartBeats->getPrevLogIndex();
+                int prevLogTerm = heartBeats->getPrevLogTerm();
+                int leaderCommit = heartBeats->getLeaderCommit();
+                cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
+                                              heartBeats->getArrivalGate()->getIndex());
 
-            // @ensure LOG MATCHING PROPERTY
-            // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
-            //                    (2) Reply false if log doesn’t contain an entry at prevLogIndex...
-            //                       whose term matches prevLogTerm
-            if (term < currentTerm or prevLogIndex > logEntries.size() - 1) {
-                rejectLog(leaderGate);
+                 // @ensure LOG MATCHING PROPERTY
+                 // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
+                 //                    (2) Reply false if log doesn’t contain an entry at prevLogIndex...
+                 //                       whose term matches prevLogTerm
+                 if (prevLogIndex > logEntries.size() - 1) {
+                     rejectLog(leaderGate);
+                 }
+                 else {
+                     if (logEntries.size() > 0) { // if logEntries is empty there is no need to deny
+                         if (logEntries[prevLogIndex].entryTerm != prevLogTerm) { // (2)
+                             rejectLog(leaderGate);
+                         }
+                     }
+                     else {
+                         // LOG IS ACCEPTED
+                         int newEntryIndex = heartBeats->getEntry().entryLogIndex;
+                         // CASE A: logMessage does not contain any entry, the follower
+                         //         replies to confirm consistency with leader's log
+                         // NOTE: id == 0 is the default value, but it does not correspond to any client
+                         if (heartBeats->getEntry().clientId == 0) {
+                             if (leaderCommit > commitIndex) {
+                                 commitIndex = prevLogIndex; // min(leaderCommit, prevLogIndex) == prevLogIndex;
+                             }
+                             acceptLog(leaderGate, prevLogIndex);
+                         }
+                         else { // CASE B: logMessage delivers a new entry for follower's log
+                                // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
+                                // No entry at newEntryIndex, simply append the new entry
+                             if (logEntries.size() - 1 < newEntryIndex) {
+                                 logEntries.push_back(heartBeats->getEntry());
+                             }
+                             // @ensure (3): if an existing entry conflicts with a new one (same index but different terms),
+                             //              delete the existing entry and all that follow it
+                             // Conflicting entry at newEntryIndex, delete the last entries up to newEntryIndex, then append the new entry
+                             else if (logEntries[newEntryIndex].entryTerm != term) {
+                                 int to_erase = logEntries.size() - newEntryIndex;
+                                 logEntries.erase(logEntries.end() - to_erase, logEntries.end());
+                                 logEntries.push_back(heartBeats->getEntry());
+                             }
+                             // @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+                             // *index of last
+                             acceptLog(leaderGate, newEntryIndex);
+                         }
+                         if (leaderCommit > commitIndex) {
+                             commitIndex = min(leaderCommit, newEntryIndex);
+                         }
+                     }
+                 }
+                 electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
+                 double randomTimeout = uniform(2, 4);
+                 scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
             }
-            else {
-                if (logEntries.size() > 0) { // if logEntries is empty there is no need to deny
-                    if (logEntries[prevLogIndex].entryTerm != prevLogTerm) { // (2)
-                        rejectLog(leaderGate);
-                    }
-                }
-                else {
-                    // LOG IS ACCEPTED
-                    int newEntryIndex = heartBeats->getEntry().entryLogIndex;
-                    // CASE A: logMessage does not contain any entry, the follower
-                    //         replies to confirm consistency with leader's log
-                    // NOTE: id == 0 is the default value, but it does not correspond to any client
-                    if (heartBeats->getEntry().clientId == 0) {
-                        if (leaderCommit > commitIndex) {
-                            commitIndex = prevLogIndex; // min(leaderCommit, prevLogIndex) == prevLogIndex;
-                        }
-                        acceptLog(leaderGate, prevLogIndex);
-                    }
-                    else { // CASE B: logMessage delivers a new entry for follower's log
-                           // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
-                           // No entry at newEntryIndex, simply append the new entry
-                        if (logEntries.size() - 1 < newEntryIndex) {
-                            logEntries.push_back(heartBeats->getEntry());
-                        }
-                        // @ensure (3): if an existing entry conflicts with a new one (same index but different terms),
-                        //              delete the existing entry and all that follow it
-                        // Conflicting entry at newEntryIndex, delete the last entries up to newEntryIndex, then append the new entry
-                        else if (logEntries[newEntryIndex].entryTerm != term) {
-                            int to_erase = logEntries.size() - newEntryIndex;
-                            logEntries.erase(logEntries.end() - to_erase, logEntries.end());
-                            logEntries.push_back(heartBeats->getEntry());
-                        }
-                        // @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-                        // *index of last
-                        acceptLog(leaderGate, newEntryIndex);
-                    }
-                    if (leaderCommit > commitIndex) {
-                        commitIndex = min(leaderCommit, newEntryIndex);
-                    }
-                }
-            }
-            electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-            double randomTimeout = uniform(2, 4);
-            scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
         }
 
         else if (msg == heartBeatsReminder) {
