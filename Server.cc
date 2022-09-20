@@ -86,6 +86,8 @@ protected:
     virtual void initialize() override;
     virtual void handleMessage(cMessage *msg) override;
     virtual void commitLog(log_entry log);
+    virtual void replyToClient(bool succeded, int serialNumber, cGate *clientGate);
+    virtual void updateCommitIndex();
     virtual void updateState(log_entry log);
     virtual void acceptLog(cGate *leaderGate, int matchIndex);
     virtual void rejectLog(cGate *leaderGate);
@@ -376,8 +378,8 @@ void Server::handleMessage(cMessage *msg)
         else if (heartBeats != nullptr)
         {
             // CANCEL RUNNING TIMEOUT
-            if (heartBeats->getLeaderCurrentTerm() >= currentTerm)
-            {
+            //if (heartBeats->getLeaderCurrentTerm() > currentTerm)// controllare se è safe solo > e non >=
+            //{
                 cDisplayString &dispStr = getDisplayString();
                 dispStr.parse("i=block/process, bronze");
                 currentTerm = heartBeats->getLeaderCurrentTerm();
@@ -388,7 +390,7 @@ void Server::handleMessage(cMessage *msg)
                 electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
                 double randomTimeout = uniform(0.5, 1);
                 scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
-            }
+            //}
             int term = heartBeats->getLeaderCurrentTerm();
             int prevLogIndex = heartBeats->getPrevLogIndex();
             int prevLogTerm = heartBeats->getPrevLogTerm();
@@ -508,36 +510,34 @@ void Server::handleMessage(cMessage *msg)
                 double randomTimeout = uniform(0.1, 0.3);
                 scheduleAt(simTime() + randomTimeout, heartBeatsReminder);
             }
-
-            // LOG MESSAGE REQUEST RECEIVED
-            else if (logMessage != nullptr)
-            {
-                int serialNumber = logMessage->getSerialNumber();
-                cGate *clientGate = gateHalf(logMessage->getArrivalGate()->getName(), cGate::OUTPUT,
-                                             logMessage->getArrivalGate()->getIndex());
-                // Redirect to leader in case the message is received by a follower.
-                if (this->getId() != leaderId)
-                {
-                    logMessage->getSerialNumber();
-                    replyToClient(false, serialNumber, clientGate);
-                }
-                else
-                {
-                    // once a log message is received a new log entry is added in the leader node
-                    // TO DO: check whether the log is already in the queue (serial number check)
-                    // If that is the case and the log has already been committed, simply reply with a "success" ACK
-                    log_entry newEntry;
-                    newEntry.clientId = logMessage->getClientId();
-                    newEntry.entryTerm = currentTerm;
-                    newEntry.operandName = logMessage->getOperandName();
-                    newEntry.operandValue = logMessage->getOperandValue();
-                    newEntry.operation = logMessage->getOperation();
-                    logEntries.push_back(newEntry);
-                    logEntries[logEntries.size() - 1].entryLogIndex = logEntries.size() - 1;
-                }
-            }
-
             // TO DO: send update to followers
+        }
+
+        // LOG MESSAGE REQUEST RECEIVED
+        else if (logMessage != nullptr){
+            int serialNumber = logMessage->getSerialNumber();
+            cGate *clientGate = gateHalf(logMessage->getArrivalGate()->getName(), cGate::OUTPUT,
+                    logMessage->getArrivalGate()->getIndex());
+            // Redirect to leader in case the message is received by a follower.
+            if (this->getId() != leaderId)
+            {
+                logMessage->getSerialNumber();
+                replyToClient(false, serialNumber, clientGate);
+            }
+            else
+            {
+                // once a log message is received a new log entry is added in the leader node
+                // TO DO: check whether the log is already in the queue (serial number check)
+                // If that is the case and the log has already been committed, simply reply with a "success" ACK
+                log_entry newEntry;
+                newEntry.clientId = logMessage->getClientId();
+                newEntry.entryTerm = currentTerm;
+                newEntry.operandName = logMessage->getOperandName();
+                newEntry.operandValue = logMessage->getOperandValue();
+                newEntry.operation = logMessage->getOperation();
+                logEntries.push_back(newEntry);
+                logEntries[logEntries.size() - 1].entryLogIndex = logEntries.size() - 1;
+            }
         }
     }
 }
