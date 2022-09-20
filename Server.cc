@@ -198,7 +198,7 @@ void Server::handleMessage(cMessage *msg)
     // ################################################ NORMAL BEHAVIOUR ################################################
     else if (iAmDead == false)
     {
-        if (msg == electionTimeoutExpired)
+        if (msg == electionTimeoutExpired and serverState != LEADER)
         { // I only enter here if a new election has to be done
             bubble("timeout expired, new election start");
             cDisplayString &dispStr = getDisplayString();
@@ -238,6 +238,7 @@ void Server::handleMessage(cMessage *msg)
         { // if arrives a vote request and i didn't already vote i can vote and send this vote to the candidate
 
             if (voteRequest->getCurrentTerm() > currentTerm)
+                cancelEvent(electionTimeoutExpired);
             { // THIS IS A STEPDOWN PROCEDURE
                 cDisplayString &dispStr = getDisplayString();
                 dispStr.parse("i=block/process,bronze");
@@ -289,6 +290,7 @@ void Server::handleMessage(cMessage *msg)
 
             if (voteReply->getCurrentTerm() > currentTerm)
             { // THIS IS A STEPDOWN PROCEDURE-> DA RIVEDERE PERCH� NON MOLTO CHIARA
+                cancelEvent(electionTimeoutExpired);
                 cDisplayString &dispStr = getDisplayString();
                 dispStr.parse("i=block/process,bronze");
                 currentTerm = voteReply->getCurrentTerm();
@@ -373,275 +375,279 @@ void Server::handleMessage(cMessage *msg)
         // HEARTBEAT RECEIVED (AppendEntries RPC)
         else if (heartBeats != nullptr)
         {
-            int term = heartBeats->getLeaderCurrentTerm();
-            if (term < currentTerm)
+            // CANCEL RUNNING TIMEOUT
+            if (heartBeats->getLeaderCurrentTerm() >= currentTerm)
             {
-                // CANCEL RUNNING TIMEOUT
-                cancelEvent(electionTimeoutExpired);
-                currentTerm = heartBeats->getLeaderCurrentTerm();
                 cDisplayString &dispStr = getDisplayString();
                 dispStr.parse("i=block/process, bronze");
+                currentTerm = heartBeats->getLeaderCurrentTerm();
                 serverState = FOLLOWER;
                 numberVoteReceived = 0;
                 this->alreadyVoted = false;
-
-                int prevLogIndex = heartBeats->getPrevLogIndex();
-                int prevLogTerm = heartBeats->getPrevLogTerm();
-                int leaderCommit = heartBeats->getLeaderCommit();
-                cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
-                                             heartBeats->getArrivalGate()->getIndex());
-
-                // Update server role if an RPC request with a newer term arrives
-                if (currentTerm < term)
-                {
-                    serverState = FOLLOWER;
-                    cancelEvent(heartBeatsReminder);
-                    this->leaderId = heartBeats->getArrivalGate()->getOwnerModule()->getId();
-                    this->bubble("I'm following!");
-                }
-                // CANCEL RUNNING TIMEOUT
                 cancelEvent(electionTimeoutExpired);
-                // @ensure LOG MATCHING PROPERTY
-                // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
-                //                    (2) Reply false if log doesn’t contain an entry at prevLogIndex...
-                //                       whose term matches prevLogTerm
-                if (term < currentTerm or prevLogIndex > logEntries.size() - 1)
-                {
-                    rejectLog(leaderGate);
+                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
+                double randomTimeout = uniform(0.5, 1);
+                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+            }
+            int term = heartBeats->getLeaderCurrentTerm();
+            int prevLogIndex = heartBeats->getPrevLogIndex();
+            int prevLogTerm = heartBeats->getPrevLogTerm();
+            int leaderCommit = heartBeats->getLeaderCommit();
+            cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
+                                         heartBeats->getArrivalGate()->getIndex());
+
+            // Update server role if an RPC request with a newer term arrives
+            if (currentTerm < term)
+            {
+                serverState = FOLLOWER;
+                cancelEvent(heartBeatsReminder);
+                this->leaderId = heartBeats->getArrivalGate()->getOwnerModule()->getId();
+                this->bubble("I'm following!");
+            }
+
+            // @ensure LOG MATCHING PROPERTY
+            // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
+            //                    (2) Reply false if log doesn'€™t contain an entry at prevLogIndex...
+            //                       whose term matches prevLogTerm
+
+            if (term < currentTerm or prevLogIndex > logEntries.size() - 1)
+            {
+                rejectLog(leaderGate);
+            }
+            else
+            {
+                if (logEntries.size() > 0)
+                { // if logEntries is empty there is no need to deny
+                    if (logEntries[prevLogIndex].entryTerm != prevLogTerm)
+                    { // (2)
+                        rejectLog(leaderGate);
+                    }
                 }
                 else
                 {
-                    if (logEntries.size() > 0)
-                    { // if logEntries is empty there is no need to deny
-                        if (logEntries[prevLogIndex].entryTerm != prevLogTerm)
-                        { // (2)
-                            rejectLog(leaderGate);
-                        }
-                    }
-                    else
+                    // LOG IS ACCEPTED
+                    int newEntryIndex = heartBeats->getEntry().entryLogIndex;
+                    // CASE A: logMessage does not contain any entry, the follower
+                    //         replies to confirm consistency with leader's log
+                    // NOTE: id == 0 is the default value, but it does not correspond to any client
+                    if (heartBeats->getEntry().clientId == 0)
                     {
-                        // LOG IS ACCEPTED
-                        int newEntryIndex = heartBeats->getEntry().entryLogIndex;
-                        // CASE A: logMessage does not contain any entry, the follower
-                        //         replies to confirm consistency with leader's log
-                        // NOTE: id == 0 is the default value, but it does not correspond to any client
-                        if (heartBeats->getEntry().clientId == 0)
-                        {
-                            if (leaderCommit > commitIndex)
-                            {
-                                commitIndex = prevLogIndex; // min(leaderCommit, prevLogIndex) == prevLogIndex;
-                            }
-                            acceptLog(leaderGate, prevLogIndex);
-                        }
-                        else
-                        { // CASE B: logMessage delivers a new entry for follower's log
-                          // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
-                          // No entry at newEntryIndex, simply append the new entry
-                            if (logEntries.size() - 1 < newEntryIndex)
-                            {
-                                logEntries.push_back(heartBeats->getEntry());
-                            }
-                            // @ensure (3): if an existing entry conflicts with a new one (same index but different terms),
-                            //              delete the existing entry and all that follow it
-                            // Conflicting entry at newEntryIndex, delete the last entries up to newEntryIndex, then append the new entry
-                            else if (logEntries[newEntryIndex].entryTerm != term)
-                            {
-                                int to_erase = logEntries.size() - newEntryIndex;
-                                logEntries.erase(logEntries.end() - to_erase, logEntries.end());
-                                logEntries.push_back(heartBeats->getEntry());
-                            }
-                            // @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-                            // *index of last
-                            acceptLog(leaderGate, newEntryIndex);
-                        }
                         if (leaderCommit > commitIndex)
                         {
-                            commitIndex = min(leaderCommit, newEntryIndex);
+                            commitIndex = prevLogIndex; // min(leaderCommit, prevLogIndex) == prevLogIndex;
                         }
+                        acceptLog(leaderGate, prevLogIndex);
+                    }
+                    else
+                    { // CASE B: logMessage delivers a new entry for follower's log
+                      // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
+                      // No entry at newEntryIndex, simply append the new entry
+                        if (logEntries.size() - 1 < newEntryIndex)
+                        {
+                            logEntries.push_back(heartBeats->getEntry());
+                        }
+                        // @ensure (3): if an existing entry conflicts with a new one (same index but different terms),
+                        //              delete the existing entry and all that follow it
+                        // Conflicting entry at newEntryIndex, delete the last entries up to newEntryIndex, then append the new entry
+                        else if (logEntries[newEntryIndex].entryTerm != term)
+                        {
+                            int to_erase = logEntries.size() - newEntryIndex;
+                            logEntries.erase(logEntries.end() - to_erase, logEntries.end());
+                            logEntries.push_back(heartBeats->getEntry());
+                        }
+                        // @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+                        // *index of last
+                        acceptLog(leaderGate, newEntryIndex);
+                    }
+                    if (leaderCommit > commitIndex)
+                    {
+                        commitIndex = min(leaderCommit, newEntryIndex);
                     }
                 }
-                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-                double randomTimeout = uniform(2, 4);
-                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
             }
+        }
 
-            // SEND HEARTBEAT (AppendEntries RPC)
-            else if (msg == heartBeatsReminder)
+        // SEND HEARTBEAT (AppendEntries RPC)
+        else if (msg == heartBeatsReminder)
+        {
+            std::string ex = "server";
+            std::string temp;
+            int lastLogIndex = logEntries.size() - 1;
+            int nextLogIndex;
+            for (cModule::GateIterator iterator(this); !iterator.end(); iterator++)
             {
-                std::string ex = "server";
-                std::string temp;
-                int lastLogIndex = logEntries.size() - 1;
-                int nextLogIndex;
-                for (cModule::GateIterator iterator(this); !iterator.end(); iterator++)
+                cGate *gate = *iterator;
+                int followerIndex = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
+                const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
+                HeartBeats *heartBeat = new HeartBeats("i'm the leader");
+                // to avoid message to client and self message
+                if (followerIndex != this->getIndex() && name == ex)
                 {
-                    cGate *gate = *iterator;
-                    int followerIndex = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
-                    const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
-                    HeartBeats *heartBeat = new HeartBeats("i'm the leader");
-                    // to avoid message to client and self message
-                    if (followerIndex != this->getIndex() && name == ex)
+                    nextLogIndex = nextIndex[followerIndex];
+                    heartBeat->setLeaderCommit(commitIndex);
+                    heartBeat->setLeaderIndex(leaderId);
+                    heartBeat->setPrevLogIndex(nextLogIndex - 1);
+                    if (logEntries.size() > 0)
                     {
-                        nextLogIndex = nextIndex[followerIndex];
-                        heartBeat->setLeaderCommit(commitIndex);
-                        heartBeat->setLeaderIndex(leaderId);
-                        heartBeat->setPrevLogIndex(nextLogIndex - 1);
-                        if (logEntries.size() > 0)
+                        heartBeat->setPrevLogTerm(logEntries[nextLogIndex - 1].entryTerm);
+                        if (nextLogIndex <= lastLogIndex)
                         {
-                            heartBeat->setPrevLogTerm(logEntries[nextLogIndex - 1].entryTerm);
-                            if (nextLogIndex <= lastLogIndex)
-                            {
-                                heartBeat->setEntry(logEntries[nextLogIndex]);
-                            }
+                            heartBeat->setEntry(logEntries[nextLogIndex]);
                         }
-                        else
-                        {
-                            heartBeat->setPrevLogTerm(0);
-                        }
-                        send(heartBeat, gate->getName(), gate->getIndex());
-                    }
-                    applyChangesMsg = new cMessage("Apply changes to State Machine");
-                    scheduleAt(simTime() + 2, applyChangesMsg);
-                }
-
-                // LOG MESSAGE REQUEST RECEIVED
-                else if (logMessage != nullptr)
-                {
-                    int serialNumber = logMessage->getSerialNumber();
-                    cGate *clientGate = gateHalf(logMessage->getArrivalGate()->getName(), cGate::OUTPUT,
-                                                 logMessage->getArrivalGate()->getIndex());
-                    // Redirect to leader in case the message is received by a follower.
-                    if (this->getId() != leaderId)
-                    {
-                        logMessage->getSerialNumber();
-                        replyToClient(false, serialNumber, clientGate);
                     }
                     else
                     {
-                        // once a log message is received a new log entry is added in the leader node
-                        // TO DO: check whether the log is already in the queue (serial number check)
-                        // If that is the case and the log has already been committed, simply reply with a "success" ACK
-                        log_entry newEntry;
-                        newEntry.clientId = logMessage->getClientId();
-                        newEntry.entryTerm = currentTerm;
-                        newEntry.operandName = logMessage->getOperandName();
-                        newEntry.operandValue = logMessage->getOperandValue();
-                        newEntry.operation = logMessage->getOperation();
-                        logEntries.push_back(newEntry);
-                        logEntries[logEntries.size() - 1].entryLogIndex = logEntries.size() - 1;
+                        heartBeat->setPrevLogTerm(0);
                     }
+                    send(heartBeat, gate->getName(), gate->getIndex());
                 }
+                applyChangesMsg = new cMessage("Apply changes to State Machine");
+                scheduleAt(simTime() + 2, applyChangesMsg);
 
-                // TO DO: send update to followers
+                heartBeatsReminder = new cMessage("heartBeatsReminder");
+                double randomTimeout = uniform(0.1, 0.3);
+                scheduleAt(simTime() + randomTimeout, heartBeatsReminder);
             }
-        }
-    }
 
-    void Server::commitLog(log_entry log)
-    {
-        updateState(log);
-        logEntries.push_back(log);
-        // TO DO: update commit state
-    }
-
-    void Server::acceptLog(cGate * leaderGate, int matchIndex)
-    {
-        HeartBeatResponse *reply = new HeartBeatResponse("Consistency check: OK");
-        reply->setMatchIndex(matchIndex);
-        reply->setTerm(currentTerm);
-        reply->setSucceded(true);
-        send(reply, leaderGate->getName(), leaderGate->getIndex());
-    }
-
-    void Server::rejectLog(cGate * leaderGate)
-    {
-        HeartBeatResponse *reply = new HeartBeatResponse("Consistency check: FAIL");
-        reply->setMatchIndex(0);
-        reply->setTerm(currentTerm);
-        reply->setSucceded(false);
-        send(reply, leaderGate->getName(), leaderGate->getIndex());
-    }
-
-    void Server::replyToClient(bool succeded, int serialNumber, cGate *clientGate)
-    {
-        std::string serNumber = std::to_string(serialNumber);
-        std::string temp;
-
-        if (succeded)
-        {
-            temp = "ACK: " + serNumber;
-        }
-        else
-        {
-            temp = "NACK: " + serNumber;
-        }
-        char const *messageContent = temp.c_str();
-        LogMessageResponse *response = new LogMessageResponse(messageContent);
-        response->setLogSerialNumber(serialNumber);
-        response->setSucceded(succeded);
-        response->setClientId(clientGate->getPathEndGate()->getOwnerModule()->getId());
-        send(response, clientGate->getName(), clientGate->getIndex());
-    }
-
-    int Server::min(int a, int b)
-    {
-        if (a > b)
-            return a;
-        else
-            return b;
-    }
-
-    // If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
-    // and log[N].term == currentTerm: set commitIndex = N
-    void Server::updateCommitIndex()
-    {
-        int lastLogEntry = logEntries.size() - 1;
-        int counter = 0;
-        int temp;
-        if (lastLogEntry > commitIndex and counter < serverNumber / 2)
-        {
-            for (int i = commitIndex + 1; i < lastLogEntry; i++)
+            // LOG MESSAGE REQUEST RECEIVED
+            else if (logMessage != nullptr)
             {
-                temp = std::count(matchIndex.begin(), matchIndex.end(), i);
-                if (temp > serverNumber / 2 and logEntries[i].entryTerm == currentTerm)
+                int serialNumber = logMessage->getSerialNumber();
+                cGate *clientGate = gateHalf(logMessage->getArrivalGate()->getName(), cGate::OUTPUT,
+                                             logMessage->getArrivalGate()->getIndex());
+                // Redirect to leader in case the message is received by a follower.
+                if (this->getId() != leaderId)
                 {
-                    commitIndex = i;
+                    logMessage->getSerialNumber();
+                    replyToClient(false, serialNumber, clientGate);
                 }
-                counter = counter + temp;
+                else
+                {
+                    // once a log message is received a new log entry is added in the leader node
+                    // TO DO: check whether the log is already in the queue (serial number check)
+                    // If that is the case and the log has already been committed, simply reply with a "success" ACK
+                    log_entry newEntry;
+                    newEntry.clientId = logMessage->getClientId();
+                    newEntry.entryTerm = currentTerm;
+                    newEntry.operandName = logMessage->getOperandName();
+                    newEntry.operandValue = logMessage->getOperandValue();
+                    newEntry.operation = logMessage->getOperation();
+                    logEntries.push_back(newEntry);
+                    logEntries[logEntries.size() - 1].entryLogIndex = logEntries.size() - 1;
+                }
             }
-        }
-    }
 
-    // Assumption: variables name space is the lower-case alphabet
-    void Server::updateState(log_entry log)
-    {
-        // TO ADD: input check and sanitizing
-        int index = (int)log.operandName - 65;
-        if (log.operandName == 'S')
-        {
-            variables[index].val = log.operandValue;
-        }
-        else if (log.operandName == 'A')
-        {
-            variables[index].val = variables[index].val + log.operandValue;
-        }
-        else if (log.operandName == 'B')
-        {
-            variables[index].val = variables[index].val - log.operandValue;
-        }
-        else if (log.operandName == 'M')
-        {
-            variables[index].val = variables[index].val * log.operandValue;
-        }
-        else if (log.operandName == 'D')
-        {
-            variables[index].val = variables[index].val / log.operandValue;
+            // TO DO: send update to followers
         }
     }
+}
 
-    void Server::finish()
+void Server::commitLog(log_entry log)
+{
+    updateState(log);
+    logEntries.push_back(log);
+    // TO DO: update commit state
+}
+
+void Server::acceptLog(cGate *leaderGate, int matchIndex)
+{
+    HeartBeatResponse *reply = new HeartBeatResponse("Consistency check: OK");
+    reply->setMatchIndex(matchIndex);
+    reply->setTerm(currentTerm);
+    reply->setSucceded(true);
+    send(reply, leaderGate->getName(), leaderGate->getIndex());
+}
+
+void Server::rejectLog(cGate *leaderGate)
+{
+    HeartBeatResponse *reply = new HeartBeatResponse("Consistency check: FAIL");
+    reply->setMatchIndex(0);
+    reply->setTerm(currentTerm);
+    reply->setSucceded(false);
+    send(reply, leaderGate->getName(), leaderGate->getIndex());
+}
+
+void Server::replyToClient(bool succeded, int serialNumber, cGate *clientGate)
+{
+    std::string serNumber = std::to_string(serialNumber);
+    std::string temp;
+
+    if (succeded)
     {
-        cancelAndDelete(failureMsg);
-        cancelAndDelete(recoveryMsg);
-        cancelAndDelete(electionTimeoutExpired);
-        cancelAndDelete(heartBeatsReminder);
+        temp = "ACK: " + serNumber;
     }
+    else
+    {
+        temp = "NACK: " + serNumber;
+    }
+    char const *messageContent = temp.c_str();
+    LogMessageResponse *response = new LogMessageResponse(messageContent);
+    response->setLogSerialNumber(serialNumber);
+    response->setSucceded(succeded);
+    response->setClientId(clientGate->getPathEndGate()->getOwnerModule()->getId());
+    send(response, clientGate->getName(), clientGate->getIndex());
+}
+
+int Server::min(int a, int b)
+{
+    if (a > b)
+        return a;
+    else
+        return b;
+}
+
+// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N,
+// and log[N].term == currentTerm: set commitIndex = N
+void Server::updateCommitIndex()
+{
+    int lastLogEntry = logEntries.size() - 1;
+    int counter = 0;
+    int temp;
+    if (lastLogEntry > commitIndex and counter < serverNumber / 2)
+    {
+        for (int i = commitIndex + 1; i < lastLogEntry; i++)
+        {
+            temp = std::count(matchIndex.begin(), matchIndex.end(), i);
+            if (temp > serverNumber / 2 and logEntries[i].entryTerm == currentTerm)
+            {
+                commitIndex = i;
+            }
+            counter = counter + temp;
+        }
+    }
+}
+
+// Assumption: variables name space is the lower-case alphabet
+void Server::updateState(log_entry log)
+{
+    // TO ADD: input check and sanitizing
+    int index = (int)log.operandName - 65;
+    if (log.operandName == 'S')
+    {
+        variables[index].val = log.operandValue;
+    }
+    else if (log.operandName == 'A')
+    {
+        variables[index].val = variables[index].val + log.operandValue;
+    }
+    else if (log.operandName == 'B')
+    {
+        variables[index].val = variables[index].val - log.operandValue;
+    }
+    else if (log.operandName == 'M')
+    {
+        variables[index].val = variables[index].val * log.operandValue;
+    }
+    else if (log.operandName == 'D')
+    {
+        variables[index].val = variables[index].val / log.operandValue;
+    }
+}
+
+void Server::finish()
+{
+    cancelAndDelete(failureMsg);
+    cancelAndDelete(recoveryMsg);
+    cancelAndDelete(electionTimeoutExpired);
+    cancelAndDelete(heartBeatsReminder);
+}
