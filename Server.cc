@@ -49,7 +49,6 @@ private:
     int messageElectionReceived;
     int serverNumber;
     int majority;
-    int temp;
 
     /****** STATE MACHINE ******/
     state_machine_variable variables[26];
@@ -76,10 +75,6 @@ private:
     std::vector<int> matchIndex; // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 
 protected:
-    // FOR TIMER IMPLEMENTATION SEE TXC8.CC FROM CUGOLA EXAMPLE, E'LA TIMEOUT EVENT
-    // GUARDARE SEMPRE ESEMPIO TXC8.CC E SIMULATION PER CAPIRE COME MANDARE PIU' MESSAGGI
-    // CONTEMPORANEAMENTE.
-
     // TXC15 E TXC16 SERVONO INVECE A FINI STATISTICI, GUARDARE QUESTI DUE ESEMPI PER CAPIRE
     // COME COLLEZIONARE DATI DURANTE LA LIVE SIMULATION
 
@@ -93,6 +88,7 @@ protected:
     virtual void rejectLog(cGate *leaderGate);
     virtual void restartCountdown();
     virtual int min(int a, int b);
+    virtual bool isLogUpToDate(int lastLogIndexCandidate, int lastLogIndexVoter, int lastLogTermCandidate, int lastLogTermVoter);
     virtual void finish() override;
 };
 
@@ -108,7 +104,7 @@ void Server::initialize()
     double realProbability = getParentModule()->par("serverDeadProbability");
     double maxDeathStart = getParentModule()->par("serverMaxDeathStart");
     majority = serverNumber / 2;
-    currentTerm = 1; // or 1
+    currentTerm = 1;
     alreadyVoted = false;
     serverState = FOLLOWER;
     numberVoteReceived = 0;
@@ -218,6 +214,12 @@ void Server::handleMessage(cMessage *msg)
             double randomTimeout = uniform(0.75, 1.25);
             scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
 
+            int lastLogIndex = logEntries.size() - 1;
+            int lastLogTerm = 1;
+            if(lastLogIndex >= 0){
+                lastLogTerm = logEntries[lastLogIndex].entryTerm;
+            }
+
             // now i send in broadcast to all other server the vote request
             for (cModule::GateIterator i(this); !i.end(); i++)
             {
@@ -233,6 +235,8 @@ void Server::handleMessage(cMessage *msg)
                     VoteRequest *voteRequest = new VoteRequest("voteRequest");
                     voteRequest->setCandidateIndex(this->getIndex());
                     voteRequest->setCurrentTerm(currentTerm);
+                    voteRequest->setLastLogIndex(lastLogIndex);
+                    voteRequest->setLastLogTerm(lastLogTerm);
                     send(voteRequest, gate->getName(), gate->getIndex());
                 }
             }
@@ -240,9 +244,20 @@ void Server::handleMessage(cMessage *msg)
 
         else if (voteRequest != nullptr)
         { // if arrives a vote request and i didn't already vote i can vote and send this vote to the candidate
+            //is useful for consistency election and log(this is the code for election restriction)
+            int finalLogIndex = logEntries.size() - 1;
+            int finalLogTerm = 1;
+            if(finalLogIndex >= 0){
+                finalLogTerm = logEntries[finalLogIndex].entryTerm;
+            }
+
+            int lastIndexLog = voteRequest->getLastLogIndex();
+            int lastTermLog = voteRequest->getLastLogTerm();
+
+            //this methods returns true if this server can vote the candidate; false if this server has to reject the vote request
+            bool candidateUpToDate = isLogUpToDate(lastIndexLog, finalLogIndex, lastTermLog, finalLogTerm);
 
             if (voteRequest->getCurrentTerm() > currentTerm)
-                cancelEvent(electionTimeoutExpired);
             { // THIS IS A STEPDOWN PROCEDURE
                 cDisplayString &dispStr = getDisplayString();
                 dispStr.parse("i=block/process,bronze");
@@ -250,23 +265,18 @@ void Server::handleMessage(cMessage *msg)
                 numberVoteReceived = 0;
                 serverState = FOLLOWER;
                 alreadyVoted = false;
-                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-                double randomTimeout = uniform(0.75, 1.25);
-                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+                restartCountdown();
             }
 
-            if (voteRequest->getCurrentTerm() == currentTerm && alreadyVoted == false)
-            {
-                cancelEvent(electionTimeoutExpired);
+            int candidateIndex = voteRequest->getCandidateIndex();
+            if (voteRequest->getCurrentTerm() == currentTerm && alreadyVoted == false && candidateUpToDate)
+            {//here the vote is approved
+                restartCountdown();
                 alreadyVoted = true;
-                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-                double randomTimeout = uniform(1, 2);
-                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
                 // now i send to the candidate server that sends to me the vote request a vote reply;
                 // i send this message only to him
                 bubble("vote reply");
-                int candidateIndex = voteRequest->getCandidateIndex();
-
+//################################################TO DO GATE HALF##############################
                 // this cycle is useful to send the message only to the candidate server that asks for a vote
                 // getSenderGate() ?
                 for (cModule::GateIterator i(this); !i.end(); i++)
@@ -283,10 +293,32 @@ void Server::handleMessage(cMessage *msg)
                         voteReply->setCommonServerIndex(this->getIndex()); // this is the id of the voting server
                         voteReply->setLeaderIndex(candidateIndex);
                         voteReply->setCurrentTerm(currentTerm);
+                        voteReply->setVoteGranted(1);
                         send(voteReply, gate->getName(), gate->getIndex());
                     }
                 }
             }
+            else{//here the vote is rejected
+                for (cModule::GateIterator i(this); !i.end(); i++)
+                {
+                    cGate *gate = *i;
+                    int h = (gate)->getPathEndGate()->getOwnerModule()->getIndex();
+                    const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
+                    std::string ex = "server";
+
+                    // to send message to candidate server
+                    if (h == candidateIndex && name == ex && h != this->getIndex())
+                    {
+                        VoteReply *voteReply = new VoteReply("voteReply");
+                        voteReply->setCommonServerIndex(this->getIndex()); // this is the id of the voting server
+                        voteReply->setLeaderIndex(candidateIndex);
+                        voteReply->setCurrentTerm(currentTerm);
+                        voteReply->setVoteGranted(0);
+                        send(voteReply, gate->getName(), gate->getIndex());
+                    }
+                }
+            }
+// ############################ FARE I GATE HALF DI QUESTI DUE MESSSAGGI###########################
         }
 
         else if (voteReply != nullptr)
@@ -294,20 +326,17 @@ void Server::handleMessage(cMessage *msg)
 
             if (voteReply->getCurrentTerm() > currentTerm)
             { // THIS IS A STEPDOWN PROCEDURE-> DA RIVEDERE PERCH� NON MOLTO CHIARA
-                cancelEvent(electionTimeoutExpired);
                 cDisplayString &dispStr = getDisplayString();
                 dispStr.parse("i=block/process,bronze");
                 currentTerm = voteReply->getCurrentTerm();
                 serverState = FOLLOWER;
                 alreadyVoted = false;
-                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-                double randomTimeout = uniform(0.75, 1.25);
-                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+                restartCountdown();
             }
 
             if (voteReply->getCurrentTerm() == currentTerm && serverState == CANDIDATE)
             {
-                numberVoteReceived = numberVoteReceived + 1;
+                numberVoteReceived = numberVoteReceived + voteReply->getVoteGranted();
                 if (numberVoteReceived > majority)
                 { // to became a leader a server must have the majority
                     bubble("i'm the leader");
@@ -387,7 +416,7 @@ void Server::handleMessage(cMessage *msg)
                     heartBeats->getArrivalGate()->getIndex());
 
             // ALL SERVERS: If RPC request or response contains term > currentTerm: set currentTerm = term, convert to follower
-            if (term > currentTerm) {
+            if (term >= currentTerm) {
                 currentTerm = term;
                 cDisplayString &dispStr = getDisplayString();
                 dispStr.parse("i=block/process, bronze");
@@ -396,7 +425,6 @@ void Server::handleMessage(cMessage *msg)
                 this->alreadyVoted = false; // SERVE?
                 this->leaderId = heartBeats->getArrivalGate()->getOwnerModule()->getId(); // COSA USARE?
             }
-
 
             // @ensure LOG MATCHING PROPERTY
             // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
@@ -504,11 +532,10 @@ void Server::handleMessage(cMessage *msg)
                 }
                 applyChangesMsg = new cMessage("Apply changes to State Machine");
                 scheduleAt(simTime() + 2, applyChangesMsg);
-
-                heartBeatsReminder = new cMessage("heartBeatsReminder");
-                double randomTimeout = uniform(0.1, 0.3);
-                scheduleAt(simTime() + randomTimeout, heartBeatsReminder);
             }
+            heartBeatsReminder = new cMessage("heartBeatsReminder");
+            double randomTimeout = uniform(0.1, 0.3);
+            scheduleAt(simTime() + randomTimeout, heartBeatsReminder);
             // TO DO: send update to followers
         }
 
@@ -591,7 +618,6 @@ void Server::restartCountdown()
 {
     cancelEvent(electionTimeoutExpired);
     electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-    // double randomTimeout = uniform(0.5, 1);
     double randomTimeout = uniform(1, 2);
     scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
 }
@@ -650,6 +676,13 @@ void Server::updateState(log_entry log)
     {
         variables[index].val = variables[index].val / log.operandValue;
     }
+}
+
+//function for Election restriction check
+bool Server::isLogUpToDate(int lastLogIndexCandidate, int lastLogIndexVoter, int lastLogTermCandidate, int lastLogTermVoter)
+{
+    return(lastLogTermCandidate > lastLogTermVoter or
+            (lastLogTermCandidate == lastLogTermVoter and lastLogIndexCandidate >= lastLogIndexVoter));
 }
 
 void Server::finish()

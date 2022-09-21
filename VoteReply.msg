@@ -4,4 +4,5 @@ message VoteReply {
     int commonServerIndex;
     int leaderIndex;
     int currentTerm;
+    int voteGranted; //if it is zero the vote rejected; otherwise is granted
 }
