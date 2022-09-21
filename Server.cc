@@ -14,9 +14,9 @@
 #include <sstream>
 #include <chrono>
 #include "Ping_m.h"
-#include <LeaderElection_m.h>
-#include <VoteReply_m.h>
-#include <VoteRequest_m.h>
+#include "LeaderElection_m.h"
+#include "VoteReply_m.h"
+#include "VoteRequest_m.h"
 #include "LogMessage_m.h"
 #include "LogMessageResponse_m.h"
 #include "HeartBeat_m.h"
@@ -56,9 +56,9 @@ private:
 
     /****** Persistent state on all servers: ******/
     int currentTerm;   // Time is divided into terms, and each term begins with an election. After a successful election, a single leader
-                       // manages the cluster until the end of the term. Some elections fail, in which case the term ends without choosing a leader.
+    // manages the cluster until the end of the term. Some elections fail, in which case the term ends without choosing a leader.
     bool alreadyVoted; // ID of the candidate that received vote in current term (or null if none)
-                       // -------------------------------------------------------------------------- Sarebbe votedFor? boolean?
+    // -------------------------------------------------------------------------- Sarebbe votedFor? boolean?
     std::vector<log_entry> logEntries;
 
     double randomTimeout; // when it expires an election starts
@@ -91,6 +91,7 @@ protected:
     virtual void updateState(log_entry log);
     virtual void acceptLog(cGate *leaderGate, int matchIndex);
     virtual void rejectLog(cGate *leaderGate);
+    virtual void restartCountdown();
     virtual int min(int a, int b);
     virtual void finish() override;
 };
@@ -101,6 +102,7 @@ Define_Module(Server);
 // invoked at simulation starting time
 void Server::initialize()
 {
+    WATCH(iAmDead);
     WATCH(currentTerm);
     serverNumber = getParentModule()->par("numServer");
     double realProbability = getParentModule()->par("serverDeadProbability");
@@ -124,7 +126,7 @@ void Server::initialize()
         double randomDelay = uniform(1, maxDeathStart);
         failureMsg = new cMessage("failureMsg");
         EV
-            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
+        << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
 
@@ -158,7 +160,7 @@ void Server::handleMessage(cMessage *msg)
         double maxDeathDuration = getParentModule()->par("serverMaxDeathDuration");
         double randomFailureTime = uniform(5, maxDeathDuration);
         EV
-            << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
+        << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
         recoveryMsg = new cMessage("recoveryMsg");
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }
@@ -187,7 +189,7 @@ void Server::handleMessage(cMessage *msg)
             double randomDelay1 = uniform(1, maxDeathStart1);
             failureMsg = new cMessage("failureMsg");
             EV
-                << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
+            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
             scheduleAt(simTime() + randomDelay1, failureMsg);
         }
     }
@@ -337,7 +339,7 @@ void Server::handleMessage(cMessage *msg)
                         double randomDelay2 = uniform(1, leaderMaxDeath);
                         failureMsg = new cMessage("failureMsg");
                         EV
-                            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
+                        << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
                         scheduleAt(simTime() + randomDelay2, failureMsg);
                     }
                     // i send in broadcast the heartBeats to all other server and a ping to all the client, in this way every client knows the leader and can send
@@ -377,51 +379,44 @@ void Server::handleMessage(cMessage *msg)
         // HEARTBEAT RECEIVED (AppendEntries RPC)
         else if (heartBeats != nullptr)
         {
-            // CANCEL RUNNING TIMEOUT
-            //if (heartBeats->getLeaderCurrentTerm() > currentTerm)// controllare se � safe solo > e non >=
-            //{
-                cDisplayString &dispStr = getDisplayString();
-                dispStr.parse("i=block/process, bronze");
-                currentTerm = heartBeats->getLeaderCurrentTerm();
-                serverState = FOLLOWER;
-                numberVoteReceived = 0;
-                this->alreadyVoted = false;
-                cancelEvent(electionTimeoutExpired);
-                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-                double randomTimeout = uniform(0.5, 1);
-                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
-            //}
             int term = heartBeats->getLeaderCurrentTerm();
             int prevLogIndex = heartBeats->getPrevLogIndex();
             int prevLogTerm = heartBeats->getPrevLogTerm();
             int leaderCommit = heartBeats->getLeaderCommit();
             cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
-                                         heartBeats->getArrivalGate()->getIndex());
+                    heartBeats->getArrivalGate()->getIndex());
 
-            // Update server role if an RPC request with a newer term arrives
-            if (currentTerm < term)
-            {
+            // ALL SERVERS: If RPC request or response contains term > currentTerm: set currentTerm = term, convert to follower
+            if (term > currentTerm) {
+                currentTerm = term;
+                cDisplayString &dispStr = getDisplayString();
+                dispStr.parse("i=block/process, bronze");
                 serverState = FOLLOWER;
-                cancelEvent(heartBeatsReminder);
-                this->leaderId = heartBeats->getArrivalGate()->getOwnerModule()->getId();
-                this->bubble("I'm following!");
+                numberVoteReceived = 0; // SERVE?
+                this->alreadyVoted = false; // SERVE?
+                this->leaderId = heartBeats->getArrivalGate()->getOwnerModule()->getId(); // COSA USARE?
             }
+
 
             // @ensure LOG MATCHING PROPERTY
             // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
-            //                    (2) Reply false if log doesn'€™t contain an entry at prevLogIndex...
-            //                       whose term matches prevLogTerm
-
-            if (term < currentTerm or prevLogIndex > logEntries.size() - 1)
+            if (term < currentTerm)
             {
                 rejectLog(leaderGate);
             }
+            // (2) Reply false if log doesn't contain an entry at prevLogIndex...
+            // whose term matches prevLogTerm
+            // (2.a) Log entries is too short
+            else if  (prevLogIndex > logEntries.size() - 1)
+            {
+                rejectLog(leaderGate);
+                restartCountdown();        }
             else
             {
                 if (logEntries.size() > 0)
                 { // if logEntries is empty there is no need to deny
                     if (logEntries[prevLogIndex].entryTerm != prevLogTerm)
-                    { // (2)
+                    { // (2.b) no entry at prevLog index whose term matches prevLogTerm
                         rejectLog(leaderGate);
                     }
                 }
@@ -429,21 +424,22 @@ void Server::handleMessage(cMessage *msg)
                 {
                     // LOG IS ACCEPTED
                     int newEntryIndex = heartBeats->getEntry().entryLogIndex;
-                    // CASE A: logMessage does not contain any entry, the follower
+                    // CASE A: logMessage DOES NOT CONTAIN ANY ENTRY, the follower
                     //         replies to confirm consistency with leader's log
-                    // NOTE: id == 0 is the default value, but it does not correspond to any client
+                    // NOTE: id == 0 is the default value, but it does not correspond to any client.
+                    //       In our implementation it means that no new entries are delivered with this message.
                     if (heartBeats->getEntry().clientId == 0)
                     {
                         if (leaderCommit > commitIndex)
                         {
-                            commitIndex = prevLogIndex; // min(leaderCommit, prevLogIndex) == prevLogIndex;
+                            commitIndex = prevLogIndex; // no new entries in the message: we can guarantee consistency up to prevLogIndex
                         }
                         acceptLog(leaderGate, prevLogIndex);
                     }
                     else
                     { // CASE B: logMessage delivers a new entry for follower's log
-                      // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
-                      // No entry at newEntryIndex, simply append the new entry
+                        // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
+                        // No entry at newEntryIndex, simply append the new entry
                         if (logEntries.size() - 1 < newEntryIndex)
                         {
                             logEntries.push_back(heartBeats->getEntry());
@@ -457,6 +453,7 @@ void Server::handleMessage(cMessage *msg)
                             logEntries.erase(logEntries.end() - to_erase, logEntries.end());
                             logEntries.push_back(heartBeats->getEntry());
                         }
+                        // NOTE: if a replica receives the same entry twice, it simply ignores the second one and sends an ACK.
                         // @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
                         // *index of last
                         acceptLog(leaderGate, newEntryIndex);
@@ -466,6 +463,7 @@ void Server::handleMessage(cMessage *msg)
                         commitIndex = min(leaderCommit, newEntryIndex);
                     }
                 }
+                restartCountdown();
             }
         }
 
@@ -486,6 +484,7 @@ void Server::handleMessage(cMessage *msg)
                 if (followerIndex != this->getIndex() && name == ex)
                 {
                     nextLogIndex = nextIndex[followerIndex];
+                    heartBeat->setLeaderCurrentTerm(currentTerm);
                     heartBeat->setLeaderCommit(commitIndex);
                     heartBeat->setLeaderIndex(leaderId);
                     heartBeat->setPrevLogIndex(nextLogIndex - 1);
@@ -586,6 +585,15 @@ void Server::replyToClient(bool succeded, int serialNumber, cGate *clientGate)
     response->setSucceded(succeded);
     response->setClientId(clientGate->getPathEndGate()->getOwnerModule()->getId());
     send(response, clientGate->getName(), clientGate->getIndex());
+}
+
+void Server::restartCountdown()
+{
+    cancelEvent(electionTimeoutExpired);
+    electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
+    // double randomTimeout = uniform(0.5, 1);
+    double randomTimeout = uniform(1, 2);
+    scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
 }
 
 int Server::min(int a, int b)
