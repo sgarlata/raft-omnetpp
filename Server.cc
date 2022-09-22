@@ -54,7 +54,7 @@ private:
     state_machine_variable variables[26];
 
     /****** Persistent state on all servers: ******/
-    int currentTerm;   // Time is divided into terms, and each term begins with an election. After a successful election, a single leader
+    int currentTerm; // Time is divided into terms, and each term begins with an election. After a successful election, a single leader
     // manages the cluster until the end of the term. Some elections fail, in which case the term ends without choosing a leader.
     bool alreadyVoted; // ID of the candidate that received vote in current term (or null if none)
     // -------------------------------------------------------------------------- Sarebbe votedFor? boolean?
@@ -122,7 +122,7 @@ void Server::initialize()
         double randomDelay = uniform(1, maxDeathStart);
         failureMsg = new cMessage("failureMsg");
         EV
-        << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
+            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
 
@@ -156,7 +156,7 @@ void Server::handleMessage(cMessage *msg)
         double maxDeathDuration = getParentModule()->par("serverMaxDeathDuration");
         double randomFailureTime = uniform(5, maxDeathDuration);
         EV
-        << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
+            << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
         recoveryMsg = new cMessage("recoveryMsg");
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }
@@ -185,7 +185,7 @@ void Server::handleMessage(cMessage *msg)
             double randomDelay1 = uniform(1, maxDeathStart1);
             failureMsg = new cMessage("failureMsg");
             EV
-            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
+                << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
             scheduleAt(simTime() + randomDelay1, failureMsg);
         }
     }
@@ -216,7 +216,8 @@ void Server::handleMessage(cMessage *msg)
 
             int lastLogIndex = logEntries.size() - 1;
             int lastLogTerm = 1;
-            if(lastLogIndex >= 0){
+            if (lastLogIndex >= 0)
+            {
                 lastLogTerm = logEntries[lastLogIndex].entryTerm;
             }
 
@@ -244,17 +245,18 @@ void Server::handleMessage(cMessage *msg)
 
         else if (voteRequest != nullptr)
         { // if arrives a vote request and i didn't already vote i can vote and send this vote to the candidate
-            //is useful for consistency election and log(this is the code for election restriction)
+            // is useful for consistency election and log(this is the code for election restriction)
             int finalLogIndex = logEntries.size() - 1;
             int finalLogTerm = 1;
-            if(finalLogIndex >= 0){
+            if (finalLogIndex >= 0)
+            {
                 finalLogTerm = logEntries[finalLogIndex].entryTerm;
             }
 
             int lastIndexLog = voteRequest->getLastLogIndex();
             int lastTermLog = voteRequest->getLastLogTerm();
 
-            //this methods returns true if this server can vote the candidate; false if this server has to reject the vote request
+            // this methods returns true if this server can vote the candidate; false if this server has to reject the vote request
             bool candidateUpToDate = isLogUpToDate(lastIndexLog, finalLogIndex, lastTermLog, finalLogTerm);
 
             if (voteRequest->getCurrentTerm() > currentTerm)
@@ -270,13 +272,13 @@ void Server::handleMessage(cMessage *msg)
 
             int candidateIndex = voteRequest->getCandidateIndex();
             if (voteRequest->getCurrentTerm() == currentTerm && alreadyVoted == false && candidateUpToDate)
-            {//here the vote is approved
+            { // here the vote is approved
                 restartCountdown();
                 alreadyVoted = true;
                 // now i send to the candidate server that sends to me the vote request a vote reply;
                 // i send this message only to him
                 bubble("vote reply");
-//################################################TO DO GATE HALF##############################
+                //################################################TO DO GATE HALF##############################
                 // this cycle is useful to send the message only to the candidate server that asks for a vote
                 // getSenderGate() ?
                 for (cModule::GateIterator i(this); !i.end(); i++)
@@ -298,7 +300,8 @@ void Server::handleMessage(cMessage *msg)
                     }
                 }
             }
-            else{//here the vote is rejected
+            else
+            { // here the vote is rejected
                 for (cModule::GateIterator i(this); !i.end(); i++)
                 {
                     cGate *gate = *i;
@@ -318,7 +321,7 @@ void Server::handleMessage(cMessage *msg)
                     }
                 }
             }
-// ############################ FARE I GATE HALF DI QUESTI DUE MESSSAGGI###########################
+            // ############################ FARE I GATE HALF DI QUESTI DUE MESSSAGGI###########################
         }
 
         else if (voteReply != nullptr)
@@ -368,7 +371,7 @@ void Server::handleMessage(cMessage *msg)
                         double randomDelay2 = uniform(1, leaderMaxDeath);
                         failureMsg = new cMessage("failureMsg");
                         EV
-                        << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
+                            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
                         scheduleAt(simTime() + randomDelay2, failureMsg);
                     }
                     // i send in broadcast the heartBeats to all other server and a ping to all the client, in this way every client knows the leader and can send
@@ -413,16 +416,17 @@ void Server::handleMessage(cMessage *msg)
             int prevLogTerm = heartBeats->getPrevLogTerm();
             int leaderCommit = heartBeats->getLeaderCommit();
             cGate *leaderGate = gateHalf(heartBeats->getArrivalGate()->getName(), cGate::OUTPUT,
-                    heartBeats->getArrivalGate()->getIndex());
+                                         heartBeats->getArrivalGate()->getIndex());
 
             // ALL SERVERS: If RPC request or response contains term > currentTerm: set currentTerm = term, convert to follower
-            if (term >= currentTerm) {
+            if (term >= currentTerm)
+            {
                 currentTerm = term;
                 cDisplayString &dispStr = getDisplayString();
                 dispStr.parse("i=block/process, bronze");
                 serverState = FOLLOWER;
-                numberVoteReceived = 0; // SERVE?
-                this->alreadyVoted = false; // SERVE?
+                numberVoteReceived = 0;                                                   // SERVE?
+                this->alreadyVoted = false;                                               // SERVE?
                 this->leaderId = heartBeats->getArrivalGate()->getOwnerModule()->getId(); // COSA USARE?
             }
 
@@ -435,10 +439,11 @@ void Server::handleMessage(cMessage *msg)
             // (2) Reply false if log doesn't contain an entry at prevLogIndex...
             // whose term matches prevLogTerm
             // (2.a) Log entries is too short
-            else if  (prevLogIndex > logEntries.size() - 1)
+            else if (prevLogIndex > logEntries.size() - 1)
             {
                 rejectLog(leaderGate);
-                restartCountdown();        }
+                restartCountdown();
+            }
             else
             {
                 if (logEntries.size() > 0)
@@ -540,10 +545,11 @@ void Server::handleMessage(cMessage *msg)
         }
 
         // LOG MESSAGE REQUEST RECEIVED
-        else if (logMessage != nullptr){
+        else if (logMessage != nullptr)
+        {
             int serialNumber = logMessage->getSerialNumber();
             cGate *clientGate = gateHalf(logMessage->getArrivalGate()->getName(), cGate::OUTPUT,
-                    logMessage->getArrivalGate()->getIndex());
+                                         logMessage->getArrivalGate()->getIndex());
             // Redirect to leader in case the message is received by a follower.
             if (this->getId() != leaderId)
             {
@@ -678,10 +684,10 @@ void Server::updateState(log_entry log)
     }
 }
 
-//function for Election restriction check
+// function for Election restriction check
 bool Server::isLogUpToDate(int lastLogIndexCandidate, int lastLogIndexVoter, int lastLogTermCandidate, int lastLogTermVoter)
 {
-    return(lastLogTermCandidate > lastLogTermVoter or
+    return (lastLogTermCandidate > lastLogTermVoter or
             (lastLogTermCandidate == lastLogTermVoter and lastLogIndexCandidate >= lastLogIndexVoter));
 }
 
