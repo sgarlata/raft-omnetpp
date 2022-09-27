@@ -10,11 +10,12 @@ struct log_entry{
 };
 
 message HeartBeats {
-    int leaderIndex;
+    int leaderAddress;
+    int destAddress;
     int leaderCurrentTerm;
     int leaderCommit;
     int prevLogIndex;
     int prevLogTerm;	// term of prevLogIndex entry
     // log information can be appended to heartbeat messages (entry)
-    log_entry entry; // ??? or entries[] ??? Con una funzione void appendEntry(log_entry newEntry); dovrebbe funzionare
+    log_entry entry;
 }

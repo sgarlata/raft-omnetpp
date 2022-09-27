@@ -49,32 +49,12 @@ void Client::initialize() {
         double randomDelay = uniform(1, maxDeathStart);
         failureMsg = new cMessage("failureMsg");
         EV
-                  << "Here is client[" + std::to_string(this->getIndex())
+                  << "Here is client[" + std::to_string(this->getId())
                           + "]: I will be dead in "
                           + std::to_string(randomDelay) + " seconds...\n";
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
-//##########################HERE I CHECK IF ALL SERVERS ARE LINKED TO CLIENTS#########################################################
-    //this is only for debug
-    EV << "Lista dei moduli connessi ai gate del client: \n";
-    int counter_printed = 1;
-    for (cModule::GateIterator i(this); !i.end(); i++) {
-        cGate *gate = *i;
-        int h = (gate)->getPathEndGate()->getOwnerModule()->getId(); //it returns the id of the client or server
-        const char *name =
-                (gate)->getPathEndGate()->getOwnerModule()->getName(); //it returns a string name as "client" or "server"
 
-        if (h != this->getId()) {
-            EV
-                      << std::to_string(counter_printed) + ". "
-                              + (gate)->getPathEndGate()->getOwnerModule()->getName()
-                              + "["
-                              + std::to_string(
-                                      (gate)->getPathEndGate()->getOwnerModule()->getIndex())
-                              + "]\n";
-            counter_printed++;
-        }
-    }
 //###################################################################################
     WATCH(numberToSend);
     //here i sent to the server the first number
