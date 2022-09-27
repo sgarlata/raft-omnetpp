@@ -18,7 +18,7 @@
 simple Client
 {
     parameters:
-        @display("i=device/pc_s");
+        @display("i=device/pc2");
     gates:
         inout gateClient[];
 }
@@ -27,7 +27,7 @@ simple Client
 simple Server
 {
     parameters:
-        @display("i=block/process");
+        @display("i=device/server2");
     gates:
         inout gateServer[];
 }

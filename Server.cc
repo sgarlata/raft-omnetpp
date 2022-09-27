@@ -58,7 +58,7 @@ private:
     state_machine_variable variables[2];
 
     /****** Persistent state on all servers: ******/
-    int currentTerm;   // Time is divided into terms, and each term begins with an election. After a successful election, a single leader
+    int currentTerm; // Time is divided into terms, and each term begins with an election. After a successful election, a single leader
     // manages the cluster until the end of the term. Some elections fail, in which case the term ends without choosing a leader.
     bool alreadyVoted; // ID of the candidate that received vote in current term (or null if none)
     // -------------------------------------------------------------------------- Sarebbe votedFor? boolean?
@@ -66,7 +66,7 @@ private:
 
     double randomTimeout; // when it expires an election starts
 
-    int leaderAddress;               // network address of the leader
+    int leaderAddress;          // network address of the leader
     int numberVoteReceived = 0; // number of vote received by every server
     bool iAmDead = false;       // it's a boolean useful to shut down server/client
 
@@ -133,7 +133,7 @@ void Server::initialize()
         double randomDelay = uniform(1, maxDeathStart);
         failureMsg = new cMessage("failureMsg");
         EV
-        << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
+            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
 
@@ -162,12 +162,12 @@ void Server::handleMessage(cMessage *msg)
     {
         bubble("i'm dead");
         cDisplayString &dispStr = getDisplayString();
-        dispStr.parse("i=block/process,red");
+        dispStr.parse("i=device/server2,red");
         iAmDead = true;
         double maxDeathDuration = getParentModule()->par("serverMaxDeathDuration");
         double randomFailureTime = uniform(5, maxDeathDuration);
         EV
-        << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
+            << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
         recoveryMsg = new cMessage("recoveryMsg");
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }
@@ -178,7 +178,7 @@ void Server::handleMessage(cMessage *msg)
         EV << "Here is server[" + std::to_string(this->getIndex()) + "]: I am no more dead... \n";
         bubble("im returned alive");
         cDisplayString &dispStr = getDisplayString();
-        dispStr.parse("i=block/process,bronze");
+        dispStr.parse("i=device/server2,bronze");
         // if this server returns alive it have to be a follower because in theory there are already another server that is the leader
         serverState = FOLLOWER;
         numberVoteReceived = 0;
@@ -196,7 +196,7 @@ void Server::handleMessage(cMessage *msg)
             double randomDelay1 = uniform(1, maxDeathStart1);
             failureMsg = new cMessage("failureMsg");
             EV
-            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
+                << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
             scheduleAt(simTime() + randomDelay1, failureMsg);
         }
     }
@@ -213,7 +213,7 @@ void Server::handleMessage(cMessage *msg)
         { // I only enter here if a new election has to be done
             bubble("timeout expired, new election start");
             cDisplayString &dispStr = getDisplayString();
-            dispStr.parse("i=block/process,silver");
+            dispStr.parse("i=device/server2,silver");
             numberVoteReceived = 0;
             currentTerm++;
             serverState = CANDIDATE;
@@ -239,7 +239,7 @@ void Server::handleMessage(cMessage *msg)
             { // THIS IS A STEPDOWN PROCEDURE
                 cancelEvent(electionTimeoutExpired);
                 cDisplayString &dispStr = getDisplayString();
-                dispStr.parse("i=block/process,bronze");
+                dispStr.parse("i=device/server2,bronze");
                 currentTerm = voteRequest->getCurrentTerm();
                 numberVoteReceived = 0;
                 serverState = FOLLOWER;
@@ -278,7 +278,7 @@ void Server::handleMessage(cMessage *msg)
             { // THIS IS A STEPDOWN PROCEDURE-> DA RIVEDERE PERCH� NON MOLTO CHIARA
                 cancelEvent(electionTimeoutExpired);
                 cDisplayString &dispStr = getDisplayString();
-                dispStr.parse("i=block/process,bronze");
+                dispStr.parse("i=device/server2,bronze");
                 currentTerm = voteReply->getCurrentTerm();
                 serverState = FOLLOWER;
                 alreadyVoted = false;
@@ -294,7 +294,7 @@ void Server::handleMessage(cMessage *msg)
                 { // to became a leader a server must have the majority
                     bubble("i'm the leader");
                     cDisplayString &dispStr = getDisplayString();
-                    dispStr.parse("i=block/process,gold");
+                    dispStr.parse("i=device/server2,gold");
                     // if a server becomes leader I have to cancel the timer for a new election since it will
                     // remain leader until the first failure, furthermore i have to reset all variables used in the election
                     cancelEvent(electionTimeoutExpired);
@@ -320,14 +320,15 @@ void Server::handleMessage(cMessage *msg)
                         double randomDelay2 = uniform(1, leaderMaxDeath);
                         failureMsg = new cMessage("failureMsg");
                         EV
-                        << "Here is server[" + std::to_string(serverNumber) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
+                            << "Here is server[" + std::to_string(serverNumber) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
                         scheduleAt(simTime() + randomDelay2, failureMsg);
                     }
 
                     // the leader sends RPCAppendEntries messages to all the followers
                     for (int i = 0; i < configuration.size(); i++)
                     {
-                        if(i != networkAddress) {
+                        if (i != networkAddress)
+                        {
                             int h = configuration[i];
                             HeartBeats *heartBeat = new HeartBeats("im the leader");
                             heartBeat->setLeaderAddress(networkAddress);
@@ -347,20 +348,30 @@ void Server::handleMessage(cMessage *msg)
         // HEARTBEAT RECEIVED (AppendEntries RPC)
         else if (heartBeat != nullptr)
         {
+            EV << "STEP 0\n";
             int term = heartBeat->getLeaderCurrentTerm();
             int prevLogIndex = heartBeat->getPrevLogIndex();
             int prevLogTerm = heartBeat->getPrevLogTerm();
             int leaderCommit = heartBeat->getLeaderCommit();
 
             // ALL SERVERS: If RPC request or response contains term > currentTerm: set currentTerm = term, convert to follower
-            if (term > currentTerm) {
+            if (term >= currentTerm)
+            {
+                EV << "STEP 1\n";
                 currentTerm = term;
+                EV << "STEP 2\n";
                 cDisplayString &dispStr = getDisplayString();
-                dispStr.parse("i=block/process, bronze");
+                EV << "STEP 3\n";
+                dispStr.parse("i=device/server2, bronze");
+                EV << "STEP 4\n";
                 serverState = FOLLOWER;
+                EV << "STEP 5\n";
                 numberVoteReceived = 0;
+                EV << "STEP 6\n";
                 this->alreadyVoted = false;
+                EV << "STEP 7\n";
                 this->leaderAddress = heartBeat->getLeaderAddress();
+                EV << "STEP 8\n";
             }
 
             // @ensure LOG MATCHING PROPERTY
@@ -372,10 +383,11 @@ void Server::handleMessage(cMessage *msg)
             // (2) Reply false if log doesn't contain an entry at prevLogIndex...
             // whose term matches prevLogTerm
             // (2.a) Log entries is too short
-            else if  (prevLogIndex > logEntries.size() - 1)
+            else if (prevLogIndex > logEntries.size() - 1)
             {
                 rejectLog(leaderAddress);
-                restartCountdown();        }
+                restartCountdown();
+            }
             else
             {
                 if (logEntries.size() > 0)
@@ -394,7 +406,7 @@ void Server::handleMessage(cMessage *msg)
                     //         replies to confirm consistency with leader's log
                     // NOTE: id == 0 is the default value, but it does not correspond to any client.
                     //       In our implementation it means that no new entries are delivered with this message.
-                    if (heartBeat->getEntry().clientId == 0)
+                    if (heartBeat->getEntry().clientAddress == 0)
                     {
                         if (leaderCommit > commitIndex)
                         {
@@ -466,7 +478,6 @@ void Server::handleMessage(cMessage *msg)
                     }
                     send(heartBeat, "gateServer$o", 0);
                 }
-
             }
             applyChangesMsg = new cMessage("Apply changes to State Machine");
             scheduleAt(simTime() + 2, applyChangesMsg);
@@ -477,10 +488,11 @@ void Server::handleMessage(cMessage *msg)
         }
 
         // LOG MESSAGE REQUEST RECEIVED
-        else if (logMessage != nullptr){
+        else if (logMessage != nullptr)
+        {
             int serialNumber = logMessage->getSerialNumber();
             cGate *clientGate = gateHalf(logMessage->getArrivalGate()->getName(), cGate::OUTPUT,
-                    logMessage->getArrivalGate()->getIndex());
+                                         logMessage->getArrivalGate()->getIndex());
             // Redirect to leader in case the message is received by a follower.
             if (networkAddress != leaderAddress)
             {
@@ -493,7 +505,7 @@ void Server::handleMessage(cMessage *msg)
                 // TO DO: check whether the log is already in the queue (serial number check)
                 // If that is the case and the log has already been committed, simply reply with a "success" ACK
                 log_entry newEntry;
-                newEntry.clientId = logMessage->getClientId();
+                newEntry.clientAddress = logMessage->getClientAddress();
                 newEntry.entryTerm = currentTerm;
                 newEntry.operandName = logMessage->getOperandName();
                 newEntry.operandValue = logMessage->getOperandValue();
@@ -618,7 +630,8 @@ void Server::updateState(log_entry log)
     }
 }
 
-void Server::initializeConfiguration(){
+void Server::initializeConfiguration()
+{
     cModule *Switch = gate("gateServer$i", 0)->getPreviousGate()->getOwnerModule();
     std::string serverString = "server";
     for (cModule::GateIterator iterator(Switch); !iterator.end(); iterator++)
@@ -626,15 +639,16 @@ void Server::initializeConfiguration(){
         cGate *gate = *iterator;
         int serverAddress = (gate)->getIndex();
         const char *name = (gate)->getPathEndGate()->getOwnerModule()->getName();
-        if (gate->isConnected()){
-            if (name == serverString){
+        if (gate->isConnected())
+        {
+            if (name == serverString)
+            {
                 serverAddress = gate->getIndex();
                 configuration.push_back(serverAddress);
             }
         }
     }
 }
-
 
 void Server::finish()
 {
