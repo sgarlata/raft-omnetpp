@@ -2,4 +2,6 @@
 message VoteRequest{
     int candidateAddress;
     int currentTerm;
+    int lastLogTerm;
+    int lastLogIndex;
 }

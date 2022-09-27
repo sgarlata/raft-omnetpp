@@ -4,4 +4,5 @@ message VoteReply {
     int voterAddress;
     int leaderAddress;
     int currentTerm;
+    int voteGranted; //if it is zero the vote rejected; otherwise is granted
 }
