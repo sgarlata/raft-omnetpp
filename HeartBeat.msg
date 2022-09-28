@@ -17,5 +17,6 @@ message HeartBeats {
     int prevLogIndex;
     int prevLogTerm;	// term of prevLogIndex entry
     // log information can be appended to heartbeat messages (entry)
+    bool isEmpty = true;
     log_entry entry;
 }
