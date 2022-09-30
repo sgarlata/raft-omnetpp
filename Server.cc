@@ -666,7 +666,7 @@ void Server::replyToClient(bool succeded, int serialNumber, cGate *clientGate)
     LogMessageResponse *response = new LogMessageResponse(messageContent);
     response->setLogSerialNumber(serialNumber);
     response->setSucceded(succeded);
-    response->setClientId(clientGate->getPathEndGate()->getOwnerModule()->getId());
+    response->setClientAddress(clientGate->getPathEndGate()->getOwnerModule()->getId());
     send(response, clientGate->getName(), clientGate->getIndex());
 }
 

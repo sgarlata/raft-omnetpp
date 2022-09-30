@@ -48,6 +48,7 @@ void Switch::handleMessage(cMessage *msg)
     HeartBeats *heartBeat = dynamic_cast<HeartBeats *>(msg);
     HeartBeatResponse *heartBeatResponse = dynamic_cast<HeartBeatResponse *>(msg);
     LogMessage *logMessage = dynamic_cast<LogMessage *>(msg);
+    LogMessageResponse *logMessageResponse = dynamic_cast<LogMessageResponse *>(msg);
     TimeOutNow *timeout = dynamic_cast<TimeOutNow *>(msg);
 
     if (voteRequest != nullptr)
@@ -102,6 +103,15 @@ void Switch::handleMessage(cMessage *msg)
 
     if (logMessage != nullptr)
     {
-        int dest = logMessage->get
+        int dest = logMessage->getLeaderAddress();
+        LogMessage *logMessage = logMessage->dup();
+        send(logMessage, "gateSwitch$o", dest);
+    }
+
+    if (logMessageResponse != nullptr)
+    {
+        int dest = logMessageResponse->getClientAddress();
+        LogMessageResponse *responseForward = logMessageResponse->dup();
+        send(responseForward, "gateSwitch$o", dest);
     }
 }

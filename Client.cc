@@ -23,9 +23,10 @@ private:
     bool iAmDead;     // this is useful to shut down a client
     int numberToSend; // this is the number that the client send to the leader, we register this number into the log
 
-    cMessage *failureMsg;  // this message is useful to shut down a client
-    cMessage *recoveryMsg; // this message is useful to revive a client
-    cMessage *sendToLog;   // this is a message only for leader server, this message contains the number for log
+    cMessage *failureMsg;             // this message is useful to shut down a client
+    cMessage *recoveryMsg;            // this message is useful to revive a client
+    cMessage *sendToLog;              // this is a message only for leader server, this message contains the number for log
+    cMessage *startSendingLogEntries; // autoMessage to set the starting point to send the request to the leader
 
     cGate *currLeaderOutputGate;
 
@@ -35,11 +36,10 @@ private:
 
     // Each command must have a unique ID. Solution: the ID (within the network) of the given Client module first, followed by a counter.
     int commandCounter;
-
+    char randomOperation;
     int randomValue;
     int intToConvert;
     char randomVarName;
-    char randomOperation;
 
 protected:
     virtual void initialize() override;
@@ -58,6 +58,8 @@ void Client::initialize()
     WATCH(iAmDead);
     WATCH_VECTOR(configuration);
     WATCH(leaderIndex);
+    WATCH(randomVarName);
+
     iAmDead = false;
 
     networkAddress = gate("gateClient$i", 0)->getPreviousGate()->getIndex();
@@ -66,7 +68,7 @@ void Client::initialize()
     leaderIndex = intuniform(0, configuration.size()); // The first request is sent to a random server
     commandCounter = 0;
 
-    intToConvert = intuniform(65, 90);
+    intToConvert = intuniform(88, 89);
     randomVarName = (char)intToConvert;
 
     double realProb = getParentModule()->par("clientsDeadProbability");
@@ -82,9 +84,10 @@ void Client::initialize()
             << "Here is client[" + std::to_string(this->getId()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
-
-    // ###################################################################################
-    sendLogMessage('x');
+    // here expires the first timeout; so the first server with timeout expired sends the first leader election message
+    startSendingLogEntries = new cMessage("i start to send entries");
+    double randomTimeout = uniform(0, 1);
+    scheduleAt(simTime() + randomTimeout, startSendingLogEntries);
 }
 
 // the client send only a number to the leader server that insert this number into the log;
@@ -139,7 +142,31 @@ void Client::handleMessage(cMessage *msg)
 
     else if (!iAmDead)
     {
-        if (ping != nullptr)
+
+        if (msg == startSendingLogEntries)
+        { // here the timeout has expired; client starts sending logMessage in loop
+            bubble("i start to send entries");
+            sendLogMessage(randomVarName);
+        }
+        if (response != nullptr)
+        {
+            // // Wrong leader
+            if (response->getLeaderAddress() != leaderIndex)
+            {
+                // Request acknowledged
+                if (response->getSucceded() == true)
+                {
+                }
+
+                // Request NOT acknowledged
+                else
+                {
+                }
+            }
+        }
+    }
+
+    /*if (ping != nullptr)
         {
             int execIndx = ping->getExecIndex();
             this->currLeaderOutputGate = gateHalf(
@@ -156,41 +183,26 @@ void Client::handleMessage(cMessage *msg)
                  (currLeaderOutputGate)->getIndex());
             bubble("here i sent a new ping");
         }
-    }
-
-    if (response != nullptr)
-    {
-        // // Wrong leader
-        if (response->getLeaderAddress !=)
-
-            // Request acknowledged
-            if (response->getSucceded() == true)
-            {
-            }
-
-            // Request NOT acknowledged
-            else
-            {
-            }
-    }
+        }*/
 }
 
 // It sends a log message, under the assumption that the client already knows a leader
 void Client::sendLogMessage(char varName)
 {
     // Preparation of random values
-    intToChar = intuniform(0, 2);
+    int intToChar = intuniform(0, 3);
     randomOperation = convertToChar(intToChar);
     randomValue = intuniform(0, 1000);
-
     LogMessage *logMessage = new LogMessage("logMessage");
     logMessage->setClientAddress(networkAddress);
     logMessage->setOperandName(varName);
     logMessage->setOperandValue(randomValue);
     logMessage->setOperation(randomOperation);
     logMessage->setSerialNumber(commandCounter++);
-    logMessage->setLeaderIndex(leaderIndex);
-    send(logMessage, "gateServer$o", 0);
+    logMessage->setLeaderAddress(this->getIndex());
+    WATCH(randomOperation);
+    WATCH(randomValue);
+    send(logMessage, "gateClient$o", 0);
     bubble("Sending a new command");
 }
 
@@ -216,19 +228,26 @@ void Client::initializeConfiguration()
 
 char Client::convertToChar(int operation)
 {
-    switch (intToChar)
+    switch (operation)
     {
     case 0:
-        return s;
+        return 'S';
         break;
 
     case 1:
-        return a;
+        return 'A';
         break;
 
     case 2:
-        return m;
+        return 'M';
         break;
+
+    case 3:
+        return 'D';
+        break;
+
+    default:
+        return '?';
     }
 }
 
