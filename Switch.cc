@@ -21,6 +21,8 @@
 #include "LogMessageResponse_m.h"
 #include "HeartBeat_m.h"
 #include "HeartBeatResponse_m.h"
+#include "TimeOutNow_m.h"
+
 
 using namespace omnetpp;
 
@@ -47,6 +49,7 @@ void Switch::handleMessage(cMessage *msg)
     HeartBeats *heartBeat = dynamic_cast<HeartBeats *>(msg);
     HeartBeatResponse *heartBeatResponse = dynamic_cast<HeartBeatResponse *>(msg);
     LogMessage *logMessage = dynamic_cast<LogMessage *>(msg);
+    TimeOutNow *timeout = dynamic_cast<TimeOutNow *>(msg);
 
     if (voteRequest != nullptr) {
         int srcAddress = voteRequest->getCandidateAddress();
@@ -84,6 +87,12 @@ void Switch::handleMessage(cMessage *msg)
     if (heartBeatResponse != nullptr) {
         int dest = heartBeatResponse->getLeaderAddress();
         HeartBeatResponse *responseForward = heartBeatResponse->dup();
+        send(responseForward , "gateSwitch$o", dest);
+    }
+
+    if (timeout != nullptr) {
+        int dest = timeout->getDestAddress();
+        TimeOutNow *responseForward = timeout->dup();
         send(responseForward , "gateSwitch$o", dest);
     }
 
