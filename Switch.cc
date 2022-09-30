@@ -114,4 +114,11 @@ void Switch::handleMessage(cMessage *msg)
         LogMessageResponse *responseForward = logMessageResponse->dup();
         send(responseForward, "gateSwitch$o", dest);
     }
+
+    if (logMessageResponse != nullptr)
+    {
+        int dest = logMessageResponse->getClientAddress();
+        LogMessageResponse *responseForward = logMessageResponse->dup();
+        send(responseForward, "gateSwitch$o", dest);
+    }
 }
