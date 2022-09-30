@@ -13,6 +13,7 @@
 #include <random>
 #include <sstream>
 #include "LogMessage_m.h"
+#include "LogMessageResponse_m.h"
 
 using namespace omnetpp;
 
@@ -35,12 +36,18 @@ private:
     // Each command must have a unique ID. Solution: the ID (within the network) of the given Client module first, followed by a counter.
     int commandCounter;
 
+    int randomValue;
+    int intToConvert;
+    char randomVarName;
+    char randomOperation;
+
 protected:
     virtual void initialize() override;
     virtual void handleMessage(cMessage *msg) override;
     virtual void finish() override;
-    virtual void sendLogMessage(char operation, char varName, int value); // this method is useful to generate a message that a client have to send to the log in the leader server
+    virtual void sendLogMessage(char varName); // this method is useful to generate a message that a client have to send to the log in the leader server (WORK IN PROGRESS)
     virtual void initializeConfiguration();
+    virtual char convertToChar(int operation);
 };
 
 Define_Module(Client);
@@ -50,13 +57,17 @@ void Client::initialize()
 
     WATCH(iAmDead);
     WATCH_VECTOR(configuration);
+    WATCH(leaderIndex);
     iAmDead = false;
 
     networkAddress = gate("gateClient$i", 0)->getPreviousGate()->getIndex();
     initializeConfiguration();
 
-    leaderIndex = intuniform(0, configuration.size());
+    leaderIndex = intuniform(0, configuration.size()); // The first request is sent to a random server
     commandCounter = 0;
+
+    intToConvert = intuniform(65, 90);
+    randomVarName = (char)intToConvert;
 
     double realProb = getParentModule()->par("clientsDeadProbability");
     double maxDeathStart = getParentModule()->par("clientsMaxDeathStart");
@@ -72,10 +83,8 @@ void Client::initialize()
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
 
-    //###################################################################################
-    WATCH(numberToSend);
-    // here i sent to the server the first number
-    numberToSend = uniform(1, 30);
+    // ###################################################################################
+    sendLogMessage('x');
 }
 
 // the client send only a number to the leader server that insert this number into the log;
@@ -83,6 +92,8 @@ void Client::initialize()
 void Client::handleMessage(cMessage *msg)
 {
     Ping *ping = dynamic_cast<Ping *>(msg);
+    LogMessageResponse *response = dynamic_cast<LogMessageResponse *>(msg);
+
     // ############################################### RECOVERY BEHAVIOUR ###############################################
 
     if (msg == failureMsg)
@@ -146,18 +157,40 @@ void Client::handleMessage(cMessage *msg)
             bubble("here i sent a new ping");
         }
     }
+
+    if (response != nullptr)
+    {
+        // // Wrong leader
+        if (response->getLeaderAddress !=)
+
+            // Request acknowledged
+            if (response->getSucceded() == true)
+            {
+            }
+
+            // Request NOT acknowledged
+            else
+            {
+            }
+    }
 }
 
 // It sends a log message, under the assumption that the client already knows a leader
-void Client::sendLogMessage(char operation, char varName, int value)
+void Client::sendLogMessage(char varName)
 {
+    // Preparation of random values
+    intToChar = intuniform(0, 2);
+    randomOperation = convertToChar(intToChar);
+    randomValue = intuniform(0, 1000);
+
     LogMessage *logMessage = new LogMessage("logMessage");
     logMessage->setClientAddress(networkAddress);
-    logMessage->setOperandName('x');
-    logMessage->setOperandValue(0);
-    logMessage->setOperation('s');
+    logMessage->setOperandName(varName);
+    logMessage->setOperandValue(randomValue);
+    logMessage->setOperation(randomOperation);
     logMessage->setSerialNumber(commandCounter++);
-    send(logMessage, "gateClient$o", leaderIndex);
+    logMessage->setLeaderIndex(leaderIndex);
+    send(logMessage, "gateServer$o", 0);
     bubble("Sending a new command");
 }
 
@@ -178,6 +211,24 @@ void Client::initializeConfiguration()
                 configuration.push_back(serverAddress);
             }
         }
+    }
+}
+
+char Client::convertToChar(int operation)
+{
+    switch (intToChar)
+    {
+    case 0:
+        return s;
+        break;
+
+    case 1:
+        return a;
+        break;
+
+    case 2:
+        return m;
+        break;
     }
 }
 
