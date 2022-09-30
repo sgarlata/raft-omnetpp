@@ -29,7 +29,7 @@ private:
 
     cGate *currLeaderOutputGate;
 
-    int leaderIndex;
+    int leaderAddress;
     int networkAddress;
     std::vector<int> configuration;
 
@@ -57,13 +57,13 @@ void Client::initialize()
 
     WATCH(iAmDead);
     WATCH_VECTOR(configuration);
-    WATCH(leaderIndex);
+    WATCH(leaderAddress);
     iAmDead = false;
 
     networkAddress = gate("gateClient$i", 0)->getPreviousGate()->getIndex();
     initializeConfiguration();
 
-    leaderIndex = intuniform(0, configuration.size()); // The first request is sent to a random server
+    leaderAddress = intuniform(0, configuration.size()); // The first request is sent to a random server
     commandCounter = 0;
 
     intToConvert = intuniform(65, 90);
@@ -179,8 +179,8 @@ void Client::handleMessage(cMessage *msg)
 void Client::sendLogMessage(char varName)
 {
     // Preparation of random values
-    intToChar = intuniform(0, 2);
-    randomOperation = convertToChar(intToChar);
+    int intToChar = intuniform(0, 2);
+    char randomOperation = convertToChar(intToChar);
     randomValue = intuniform(0, 1000);
 
     LogMessage *logMessage = new LogMessage("logMessage");
@@ -189,7 +189,7 @@ void Client::sendLogMessage(char varName)
     logMessage->setOperandValue(randomValue);
     logMessage->setOperation(randomOperation);
     logMessage->setSerialNumber(commandCounter++);
-    logMessage->setLeaderIndex(leaderIndex);
+    logMessage->setLeaderAddress(leaderIndex);
     send(logMessage, "gateServer$o", 0);
     bubble("Sending a new command");
 }

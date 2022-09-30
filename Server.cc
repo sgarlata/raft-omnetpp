@@ -102,8 +102,8 @@ protected:
     virtual void initialize() override;
     virtual void handleMessage(cMessage *msg) override;
     virtual void commitLog(log_entry log);
-    virtual void replyToClient(bool succeded, int serialNumber, cGate *clientGate);
-    virtual void redirectToLeader(int serialNumber, cGate *clientGate);
+    virtual void replyToClient(bool succeded, int serialNumber, int clientAddress);
+    virtual void redirectToLeader(int serialNumber, int clientAddress);
     virtual void updateCommitIndex();
     virtual void updateState(log_entry log);
     virtual void acceptLog(int leaderAddress, int matchIndex);
@@ -148,7 +148,7 @@ void Server::initialize()
         double randomDelay = uniform(1, maxDeathStart);
         failureMsg = new cMessage("failureMsg");
         EV
-            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
+        << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
 
@@ -183,7 +183,7 @@ void Server::handleMessage(cMessage *msg)
         double maxDeathDuration = getParentModule()->par("serverMaxDeathDuration");
         double randomFailureTime = uniform(5, maxDeathDuration);
         EV
-            << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
+        << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
         recoveryMsg = new cMessage("recoveryMsg");
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }
@@ -212,7 +212,7 @@ void Server::handleMessage(cMessage *msg)
             double randomDelay1 = uniform(1, maxDeathStart1);
             failureMsg = new cMessage("failureMsg");
             EV
-                << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
+            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
             scheduleAt(simTime() + randomDelay1, failureMsg);
         }
     }
@@ -355,7 +355,7 @@ void Server::handleMessage(cMessage *msg)
                         double randomDelay2 = uniform(1, leaderMaxDeath);
                         failureMsg = new cMessage("failureMsg");
                         EV
-                            << "Here is server[" + std::to_string(serverNumber) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
+                        << "Here is server[" + std::to_string(serverNumber) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
                         scheduleAt(simTime() + randomDelay2, failureMsg);
                     }
 
@@ -568,12 +568,12 @@ void Server::handleMessage(cMessage *msg)
         else if (logMessage != nullptr && !leaderTransferPhase)
         {
             int serialNumber = logMessage->getSerialNumber();
-            cGate *clientGate = gateHalf(logMessage->getArrivalGate()->getName(), cGate::OUTPUT,
-                                         logMessage->getArrivalGate()->getIndex());
+            int clientAddress = logMessage->getClientAddress();
+
             // Redirect to leader in case the message is received by a follower.
             if (networkAddress != leaderAddress)
             {
-                redirectToLeader(serialNumber, clientGate);
+                redirectToLeader(serialNumber, clientAddress);
                 // replyToClient(false, serialNumber, clientGate);
             }
             else
@@ -649,11 +649,10 @@ void Server::rejectLog(int leaderAddress)
     send(reply, "serverGate$o", 0);
 }
 
-void Server::replyToClient(bool succeded, int serialNumber, cGate *clientGate)
+void Server::replyToClient(bool succeded, int serialNumber, int clientAddress)
 {
     std::string serNumber = std::to_string(serialNumber);
     std::string temp;
-
     if (succeded)
     {
         temp = "ACK: " + serNumber;
@@ -666,17 +665,19 @@ void Server::replyToClient(bool succeded, int serialNumber, cGate *clientGate)
     LogMessageResponse *response = new LogMessageResponse(messageContent);
     response->setLogSerialNumber(serialNumber);
     response->setSucceded(succeded);
-    response->setClientId(clientGate->getPathEndGate()->getOwnerModule()->getId());
-    send(response, clientGate->getName(), clientGate->getIndex());
+    response->setClientAddress(clientAddress);
+    send(response, "serverGate$o", 0);
 }
 
-void Server::redirectToLeader(int serialNumber, cGate *clientGate)
+void Server::redirectToLeader(int serialNumber, int clientAddress)
 {
     LogMessageResponse *response = new LogMessageResponse("I'm not the leader. Try with this.");
     // response->setClientId(); TODO obtain client id from clientgate
     response->setLeaderAddress(leaderAddress);
     response->setSucceded(false);
     response->setLogSerialNumber(serialNumber);
+    response->setClientAddress(clientAddress);
+    send(response, "serverGate$o", 0);
 }
 
 void Server::restartCountdown()

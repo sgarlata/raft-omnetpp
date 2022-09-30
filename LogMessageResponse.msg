@@ -14,7 +14,7 @@
 // 
 
 message LogMessageResponse {
-    int clientId;
+    int clientAddress;
     int leaderAddress;
     int logSerialNumber;
     bool succeded;

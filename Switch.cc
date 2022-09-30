@@ -23,6 +23,7 @@
 #include "HeartBeatResponse_m.h"
 #include "TimeOutNow_m.h"
 
+
 using namespace omnetpp;
 
 class Switch : public cSimpleModule
@@ -48,10 +49,10 @@ void Switch::handleMessage(cMessage *msg)
     HeartBeats *heartBeat = dynamic_cast<HeartBeats *>(msg);
     HeartBeatResponse *heartBeatResponse = dynamic_cast<HeartBeatResponse *>(msg);
     LogMessage *logMessage = dynamic_cast<LogMessage *>(msg);
+    LogMessageResponse *logMessageResponse = dynamic_cast<LogMessageResponse *>(msg);
     TimeOutNow *timeout = dynamic_cast<TimeOutNow *>(msg);
 
-    if (voteRequest != nullptr)
-    {
+    if (voteRequest != nullptr) {
         int srcAddress = voteRequest->getCandidateAddress();
         // now i send in broadcast to all other server the vote request
         for (cModule::GateIterator i(this); !i.end(); i++)
@@ -72,36 +73,40 @@ void Switch::handleMessage(cMessage *msg)
         }
     }
 
-    if (voteReply != nullptr)
-    {
+    if (voteReply != nullptr) {
         int dest = voteReply->getLeaderAddress();
         VoteReply *voteReplyForward = voteReply->dup();
         send(voteReplyForward, "gateSwitch$o", dest);
     }
 
-    if (heartBeat != nullptr)
-    {
+    if (heartBeat != nullptr) {
         int dest = heartBeat->getDestAddress();
         HeartBeats *heartBeatForward = heartBeat->dup();
         send(heartBeatForward, "gateSwitch$o", dest);
     }
 
-    if (heartBeatResponse != nullptr)
-    {
+    if (heartBeatResponse != nullptr) {
         int dest = heartBeatResponse->getLeaderAddress();
         HeartBeatResponse *responseForward = heartBeatResponse->dup();
-        send(responseForward, "gateSwitch$o", dest);
+        send(responseForward , "gateSwitch$o", dest);
     }
 
-    if (timeout != nullptr)
-    {
+    if (timeout != nullptr) {
         int dest = timeout->getDestAddress();
         TimeOutNow *responseForward = timeout->dup();
-        send(responseForward, "gateSwitch$o", dest);
+        send(responseForward , "gateSwitch$o", dest);
     }
 
-    if (logMessage != nullptr)
-    {
-        int dest = logMessage->get
+    if (logMessage != nullptr) {
+        int dest = logMessage->getClientAddress();
+        LogMessage *logForward = logMessage->dup();
+        send(logForward , "gateSwitch$o", dest);
     }
+
+    if (logMessageResponse != nullptr) {
+        int dest = logMessageResponse->getClientAddress();
+        LogMessageResponse *responseForward = logMessageResponse->dup();
+        send(responseForward , "gateSwitch$o", dest);
+    }
+
 }

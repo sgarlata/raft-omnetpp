@@ -6,8 +6,7 @@
  */
 using namespace omnetpp;
 
-struct log_entry
-{
+struct log_entry {
         int clientAddress;
         int entryLogIndex;
         int entryTerm;
@@ -16,16 +15,12 @@ struct log_entry
         char operation;
 };
 
-struct state_machine_variable
-{
+struct state_machine_variable {
         char variable = 0;
         int val = 0;
 };
 
-enum stateEnum
-{
-        FOLLOWER,
-        CANDIDATE,
-        LEADER,
-        DEAD
+enum stateEnum {
+    FOLLOWER, CANDIDATE, LEADER, DEAD
 };
+
