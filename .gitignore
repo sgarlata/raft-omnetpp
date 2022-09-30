@@ -1,0 +1,6 @@
+**/
+.*
+*_m.*
+Makefile
+raft-omnetpp
+!.gitignore
