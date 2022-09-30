@@ -27,10 +27,12 @@ private:
     cMessage *recoveryMsg;            // this message is useful to revive a client
     cMessage *sendToLog;              // this is a message only for leader server, this message contains the number for log
     cMessage *startSendingLogEntries; // autoMessage to set the starting point to send the request to the leader
+    cMessage *checkForResponse;       // autoMessage to check whether the last request was acknowledged
 
     cGate *currLeaderOutputGate;
 
     int leaderAddress;
+    int randomIndex; // Random index for the leader within the client's configuration vector
     int networkAddress;
     std::vector<int> configuration;
 
@@ -40,6 +42,9 @@ private:
     int randomValue;
     int intToConvert;
     char randomVarName;
+    bool freeToSend = true; // True if the last request was acknowledged by the leader
+
+    LogMessage *lastLogM\essage = nullptr;
 
 protected:
     virtual void initialize() override;
@@ -63,10 +68,11 @@ void Client::initialize()
     networkAddress = gate("gateClient$i", 0)->getPreviousGate()->getIndex();
     initializeConfiguration();
 
-    leaderAddress = intuniform(0, configuration.size()); // The first request is sent to a random server
+    randomIndex = intuniform(0, configuration.size()); // The first request is sent to a random server
+    leaderAddress = configuration[randomIndex];
     commandCounter = 0;
 
-    intToConvert = intuniform(88, 89);
+    intToConvert = intuniform(88, 89); // ASCII code for x and y
     randomVarName = (char)intToConvert;
 
     double realProb = getParentModule()->par("clientsDeadProbability");
@@ -83,7 +89,7 @@ void Client::initialize()
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
     // here expires the first timeout; so the first server with timeout expired sends the first leader election message
-    startSendingLogEntries = new cMessage("i start to send entries");
+    startSendingLogEntries = new cMessage("I start to send entries.");
     double randomTimeout = uniform(0, 1);
     scheduleAt(simTime() + randomTimeout, startSendingLogEntries);
 }
@@ -140,25 +146,46 @@ void Client::handleMessage(cMessage *msg)
 
     else if (!iAmDead)
     {
-
         if (msg == startSendingLogEntries)
         { // here the timeout has expired; client starts sending logMessage in loop
-            bubble("i start to send entries");
-            sendLogMessage(randomVarName);
+            if (freeToSend)
+            {
+                bubble("I start to send entries.");
+                sendLogMessage(randomVarName);
+            }
+
+            double randomTimeout = uniform(0, 1);
+            scheduleAt(simTime() + randomTimeout, startSendingLogEntries);
         }
+        else if (msg == checkForResponse && !freeToSend)
+        {
+            randomIndex = intuniform(0, configuration.size());
+            leaderAddress = configuration[randomIndex];
+            lastLogMessage->setLeaderAddress;
+            bubble("Resending after timeout.");
+            send(lastLogMessage, "gateClient$o", 0);
+            scheduleAt(simTime() + 1, checkForResponse);
+        }
+
         if (response != nullptr)
         {
-            // // Wrong leader
-            if (response->getLeaderAddress() != leaderIndex)
+            // Request acknowledged
+            if (response->getSucceded())
             {
-                // Request acknowledged
-                if (response->getSucceded() == true)
+                freeToSend = false;
+                cancelEvent(checkForResponse);
+            }
+            else
+            {
+                // Wrong leader
+                if (response->getLeaderAddress() != leaderAddress)
                 {
-                }
-
-                // Request NOT acknowledged
-                else
-                {
+                    leaderAddress = response->getLeaderAddress();
+                    lastLogMessage->setLeaderAddress(leaderAddress);
+                    bubble("Redirecting command to the leader.");
+                    cancelEvent(checkForResponse);
+                    send(lastLogMessage, "gateClient$o", 0);
+                    scheduleAt(simTime() + 1, checkForResponse);
                 }
             }
         }
@@ -197,11 +224,15 @@ void Client::sendLogMessage(char varName)
     logMessage->setOperandValue(randomValue);
     logMessage->setOperation(randomOperation);
     logMessage->setSerialNumber(commandCounter++);
-    logMessage->setLeaderAddress(leaderIndex);
+    logMessage->setLeaderAddress(leaderAddress);
+    lastLogMessage = logMessage->dup();
     WATCH(randomOperation);
     WATCH(randomValue);
     send(logMessage, "gateClient$o", 0);
+    freeToSend = false;
     bubble("Sending a new command");
+
+    scheduleAt(simTime() + 1, checkForResponse);
 }
 
 void Client::initializeConfiguration()
@@ -247,6 +278,11 @@ char Client::convertToChar(int operation)
     default:
         return '?';
     }
+}
+
+int Client::searchLeaderIndex(int leaderAddress)
+{
+    for
 }
 
 void Client::finish()

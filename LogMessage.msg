@@ -8,5 +8,4 @@ message LogMessage {
     char operation; // s == set, a == add, m == mul
     int serialNumber;
     int leaderAddress;
-    int destAddress;
 };

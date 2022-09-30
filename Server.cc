@@ -76,6 +76,7 @@ private:
     bool iAmDead = false;       // it's a boolean useful to shut down server/client
     bool leaderTransferPhase = false;
     bool timeOutNowSent = false;
+    cModule *Switch, *serverToDelete;
 
     /****** Volatile state on all servers: ******/
     int commitIndex = -1; // index of highest log entry known to be committed (initialized to 0, increases monotonically)
@@ -113,6 +114,7 @@ protected:
     virtual void restartCountdown();
     virtual int min(int a, int b);
     virtual void initializeConfiguration();
+    virtual void deleteServer();
     virtual void finish() override;
 };
 
@@ -133,6 +135,8 @@ void Server::initialize()
     acceptVoteRequest = true;
     leaderAddress = -1;
     networkAddress = gate("gateServer$i", 0)->getPreviousGate()->getIndex();
+    Switch = gate("gateServer$i", 0)->getPreviousGate()->getOwnerModule();
+
     initializeConfiguration();
     numberVotingMembers = configuration.size();
     for (int i = 0; i < configuration.size(); ++i)
@@ -574,7 +578,6 @@ void Server::handleMessage(cMessage *msg)
             if (networkAddress != leaderAddress)
             {
                 redirectToLeader(serialNumber, clientAddress);
-                // replyToClient(false, serialNumber, clientGate);
             }
             else
             {
@@ -672,11 +675,10 @@ void Server::replyToClient(bool succeded, int serialNumber, int clientAddress)
 void Server::redirectToLeader(int serialNumber, int clientAddress)
 {
     LogMessageResponse *response = new LogMessageResponse("I'm not the leader. Try with this.");
-    // response->setClientId(); TODO obtain client id from clientgate
+    response->setClientAddress(clientAddress);
     response->setLeaderAddress(leaderAddress);
     response->setSucceded(false);
     response->setLogSerialNumber(serialNumber);
-    response->setClientAddress(clientAddress);
     send(response, "serverGate$o", 0);
 }
 
@@ -768,6 +770,26 @@ void Server::initializeConfiguration()
                 serverAddress = gate->getIndex();
                 configuration.push_back(serverAddress);
             }
+        }
+    }
+}
+
+void Server::deleteServer()
+{
+    int serverIndex;
+    int gatesize = Switch->gateSize("gateSwitch$o");
+    for (int i = 0; i < Switch->gateSize("gateSwitch$o"); i++)
+    {
+        // There is only one server to delete and disconnect port from the switch
+        serverIndex = Switch->gate("gateSwitch$o", i)->getIndex();
+        if (serverNumber == serverIndex)
+        {
+            serverToDelete = Switch->gate("gateSwitch$o", i)->getNextGate()->getOwnerModule();
+            serverToDelete->gate("gateServer$o", 0)->disconnect();
+            Switch->gate("gateSwitch$o", i)->disconnect();
+            // Delete the Server
+            // serverToDelete->callFinish();
+            // serverToDelete->deleteModule();
         }
     }
 }
