@@ -44,7 +44,7 @@ private:
     char randomVarName;
     bool freeToSend = true; // True if the last request was acknowledged by the leader
 
-    LogMessage *lastLogM\essage = nullptr;
+    LogMessage *lastLogMessage = nullptr;
 
 protected:
     virtual void initialize() override;
@@ -161,7 +161,7 @@ void Client::handleMessage(cMessage *msg)
         {
             randomIndex = intuniform(0, configuration.size());
             leaderAddress = configuration[randomIndex];
-            lastLogMessage->setLeaderAddress;
+            lastLogMessage->setLeaderAddress(leaderAddress);
             bubble("Resending after timeout.");
             send(lastLogMessage, "gateClient$o", 0);
             scheduleAt(simTime() + 1, checkForResponse);
@@ -278,11 +278,6 @@ char Client::convertToChar(int operation)
     default:
         return '?';
     }
-}
-
-int Client::searchLeaderIndex(int leaderAddress)
-{
-    for
 }
 
 void Client::finish()
