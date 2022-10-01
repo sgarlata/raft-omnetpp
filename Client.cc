@@ -85,7 +85,7 @@ void Client::initialize()
         double randomDelay = uniform(1, maxDeathStart);
         failureMsg = new cMessage("failureMsg");
         EV
-            << "Here is client[" + std::to_string(this->getId()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
+        << "Here is client[" + std::to_string(this->getId()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
     // here expires the first timeout; so the first server with timeout expired sends the first leader election message
@@ -111,10 +111,10 @@ void Client::handleMessage(cMessage *msg)
         // Schedule Recovery Message
         recoveryMsg = new cMessage("recoveryMsg");
         double maxDeathDuration = getParentModule()->par(
-            "clientsMaxDeathDuration");
+                "clientsMaxDeathDuration");
         double randomFailureTime = uniform(5, maxDeathDuration);
         EV
-            << "\nClient[" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
+        << "\nClient[" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }
 
@@ -131,7 +131,7 @@ void Client::handleMessage(cMessage *msg)
             double randomDelay1 = uniform(1, maxDeathStart1);
             failureMsg = new cMessage("failureMsg");
             EV
-                << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
+            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
             scheduleAt(simTime() + randomDelay1, failureMsg);
         }
     }
@@ -141,7 +141,7 @@ void Client::handleMessage(cMessage *msg)
     else if (iAmDead)
     {
         EV
-            << "At the moment I'm dead so I can't react to this message, sorry \n";
+        << "At the moment I'm dead so I can't react to this message, sorry \n";
     }
 
     else if (!iAmDead)
@@ -157,6 +157,7 @@ void Client::handleMessage(cMessage *msg)
             double randomTimeout = uniform(0, 1);
             scheduleAt(simTime() + randomTimeout, startSendingLogEntries);
         }
+
         else if (msg == checkForResponse && !freeToSend)
         {
             randomIndex = intuniform(0, configuration.size());
@@ -164,6 +165,7 @@ void Client::handleMessage(cMessage *msg)
             lastLogMessage->setLeaderAddress(leaderAddress);
             bubble("Resending after timeout.");
             send(lastLogMessage, "gateClient$o", 0);
+            checkForResponse = new cMessage("Start countdown for my request.");
             scheduleAt(simTime() + 1, checkForResponse);
         }
 
@@ -183,8 +185,10 @@ void Client::handleMessage(cMessage *msg)
                     leaderAddress = response->getLeaderAddress();
                     lastLogMessage->setLeaderAddress(leaderAddress);
                     bubble("Redirecting command to the leader.");
+                    LogMessage *newMessage = lastLogMessage->dup();
                     cancelEvent(checkForResponse);
-                    send(lastLogMessage, "gateClient$o", 0);
+                    send(newMessage, "gateClient$o", 0);
+                    checkForResponse = new cMessage("Start countdown for my request.");
                     scheduleAt(simTime() + 1, checkForResponse);
                 }
             }
@@ -231,14 +235,14 @@ void Client::sendLogMessage(char varName)
     send(logMessage, "gateClient$o", 0);
     freeToSend = false;
     bubble("Sending a new command");
-
+    checkForResponse = new cMessage("Start countdown for my request.");
     scheduleAt(simTime() + 1, checkForResponse);
 }
 
 void Client::initializeConfiguration()
 {
     cModule *Switch = gate("gateClient$i", 0)->getPreviousGate()->getOwnerModule();
-    std::string serverString = "client";
+    std::string serverString = "server";
     for (cModule::GateIterator iterator(Switch); !iterator.end(); iterator++)
     {
         cGate *gate = *iterator;

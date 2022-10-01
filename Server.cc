@@ -331,6 +331,7 @@ void Server::handleMessage(cMessage *msg)
                     // remain leader until the first failure, furthermore i have to reset all variables used in the election
                     cancelEvent(electionTimeoutExpired);
                     serverState = LEADER;
+                    leaderAddress = networkAddress;
                     numberVoteReceived = 0;
                     this->alreadyVoted = false;
                     for (int serverIndex = 0; serverIndex < nextIndex.size(); ++serverIndex)
@@ -669,7 +670,7 @@ void Server::replyToClient(bool succeded, int serialNumber, int clientAddress)
     response->setLogSerialNumber(serialNumber);
     response->setSucceded(succeded);
     response->setClientAddress(clientAddress);
-    send(response, "serverGate$o", 0);
+    send(response, "gateServere$o", 0);
 }
 
 void Server::redirectToLeader(int serialNumber, int clientAddress)
@@ -679,7 +680,7 @@ void Server::redirectToLeader(int serialNumber, int clientAddress)
     response->setLeaderAddress(leaderAddress);
     response->setSucceded(false);
     response->setLogSerialNumber(serialNumber);
-    send(response, "serverGate$o", 0);
+    send(response, "gateServer$o", 0);
 }
 
 void Server::restartCountdown()
