@@ -27,7 +27,7 @@ private:
     cMessage *recoveryMsg;            // this message is useful to revive a client
     cMessage *sendToLog;              // this is a message only for leader server, this message contains the number for log
     cMessage *sendLogEntry;           // send a request to the leader
-    cMessage *checkForResponse;       // autoMessage to check whether the last request was acknowledged
+    cMessage *reqTimeoutExpired;       // autoMessage to check whether the last request was acknowledged
 
     cGate *currLeaderOutputGate;
 
@@ -155,16 +155,16 @@ void Client::handleMessage(cMessage *msg)
             }
         }
 
-        else if (msg == checkForResponse && !freeToSend)
+        else if (msg == reqTimeoutExpired && !freeToSend)
         {
             randomIndex = intuniform(0, configuration.size() - 1);
             leaderAddress = configuration[randomIndex];
             lastLogMessage->setLeaderAddress(leaderAddress);
+            LogMessage *newMex = lastLogMessage->dup();
             bubble("Resending after timeout.");
-            // se scade 2 volte si rompe, usa la dup TO DO
             send(lastLogMessage, "gateClient$o", 0);
-            checkForResponse = new cMessage("Start countdown for my request.");
-            scheduleAt(simTime() + 10, checkForResponse);
+            reqTimeoutExpired = new cMessage("Start countdown for my request.");
+            scheduleAt(simTime() + 5, reqTimeoutExpired);
         }
 
         if (response != nullptr)
@@ -173,7 +173,7 @@ void Client::handleMessage(cMessage *msg)
             if (response->getSucceded())
             {
                 freeToSend = false;
-                cancelEvent(checkForResponse);
+                cancelEvent(reqTimeoutExpired);
             }
             else
             {
@@ -184,33 +184,14 @@ void Client::handleMessage(cMessage *msg)
                     lastLogMessage->setLeaderAddress(leaderAddress);
                     bubble("Redirecting command to the leader.");
                     LogMessage *newMessage = lastLogMessage->dup();
-                    cancelEvent(checkForResponse);
+                    cancelEvent(reqTimeoutExpired);
                     send(newMessage, "gateClient$o", 0);
-                    checkForResponse = new cMessage("Start countdown for my request.");
-                    scheduleAt(simTime() + 1, checkForResponse);
+                    reqTimeoutExpired = new cMessage("Start countdown for my request.");
+                    scheduleAt(simTime() + 1, reqTimeoutExpired);
                 }
             }
         }
     }
-
-    /*if (ping != nullptr)
-        {
-            int execIndx = ping->getExecIndex();
-            this->currLeaderOutputGate = gateHalf(
-                ping->getArrivalGate()->getName(), cGate::OUTPUT,
-                ping->getArrivalGate()->getIndex());
-
-            bubble("message from server received");
-            int leaderServerId = ping->getLeaderId();
-            delete ping;
-            Ping *pong = new Ping("ping");
-            pong->setClientIndex(this->getIndex());
-            pong->setExecIndex(leaderServerId);
-            send(pong, (currLeaderOutputGate)->getName(),
-                 (currLeaderOutputGate)->getIndex());
-            bubble("here i sent a new ping");
-        }
-        }*/
 }
 
 // It sends a log message, under the assumption that the client already knows a leader
@@ -219,7 +200,7 @@ void Client::sendLogMessage(char varName)
     // Preparation of random values
     int intToChar = intuniform(0, 2);
     char randomOperation = convertToChar(intToChar);
-    randomValue = intuniform(0, 1000);
+    randomValue = intuniform(0, 20);
     LogMessage *logMessage = new LogMessage("logMessage");
     logMessage->setClientAddress(networkAddress);
     logMessage->setOperandName(varName);
@@ -233,8 +214,8 @@ void Client::sendLogMessage(char varName)
     send(logMessage, "gateClient$o", 0);
     freeToSend = false;
     bubble("Sending a new command");
-    checkForResponse = new cMessage("Start countdown for my request.");
-    scheduleAt(simTime() + 1, checkForResponse);
+    reqTimeoutExpired = new cMessage("Start countdown for my request.");
+    scheduleAt(simTime() + 1, reqTimeoutExpired);
 }
 
 void Client::initializeConfiguration()

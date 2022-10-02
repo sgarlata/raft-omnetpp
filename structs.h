@@ -11,7 +11,7 @@ struct log_entry {
         int entryLogIndex;
         int entryTerm;
         char operandName;
-        char operandValue;
+        int operandValue;
         char operation;
 };
 
@@ -19,8 +19,3 @@ struct state_machine_variable {
         char variable = 0;
         int val = 0;
 };
-
-enum stateEnum {
-    FOLLOWER, CANDIDATE, LEADER, DEAD
-};
-

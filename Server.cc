@@ -125,6 +125,7 @@ void Server::initialize()
     WATCH(leaderAddress);
     WATCH_VECTOR(nextIndex);
     WATCH_VECTOR(matchIndex);
+    WATCH(logEntries);
     serverNumber = (this)->getIndex();
     double realProbability = getParentModule()->par("serverDeadProbability");
     double maxDeathStart = getParentModule()->par("serverMaxDeathStart");
@@ -785,6 +786,25 @@ void Server::deleteServer()
             // serverToDelete->deleteModule();
         }
     }
+}
+
+std::ostream& operator<<(std::ostream& stream, const std::vector<log_entry> logEntries)
+{
+    for (int index = 0; index < logEntries.size(); index++)
+    {
+        stream << "[I: "
+                << logEntries[index].entryLogIndex
+                << ",T:"
+                << logEntries[index].entryTerm
+                << ",VAR:"
+                << logEntries[index].operandName
+                << ",OP:"
+                << logEntries[index].operation
+                << ",VAL:"
+                << logEntries[index].operandValue
+                << "] ";
+    }
+    return stream;
 }
 
 void Server::finish()
