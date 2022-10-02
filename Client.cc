@@ -26,7 +26,7 @@ private:
     cMessage *failureMsg;             // this message is useful to shut down a client
     cMessage *recoveryMsg;            // this message is useful to revive a client
     cMessage *sendToLog;              // this is a message only for leader server, this message contains the number for log
-    cMessage *startSendingLogEntries; // autoMessage to set the starting point to send the request to the leader
+    cMessage *sendLogEntry;           // send a request to the leader
     cMessage *checkForResponse;       // autoMessage to check whether the last request was acknowledged
 
     cGate *currLeaderOutputGate;
@@ -68,7 +68,7 @@ void Client::initialize()
     networkAddress = gate("gateClient$i", 0)->getPreviousGate()->getIndex();
     initializeConfiguration();
 
-    randomIndex = intuniform(0, configuration.size()); // The first request is sent to a random server
+    randomIndex = intuniform(0, configuration.size() - 1); // The first request is sent to a random server
     leaderAddress = configuration[randomIndex];
     commandCounter = 0;
 
@@ -89,9 +89,9 @@ void Client::initialize()
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
     // here expires the first timeout; so the first server with timeout expired sends the first leader election message
-    startSendingLogEntries = new cMessage("I start to send entries.");
+    sendLogEntry = new cMessage("I start to send entries.");
     double randomTimeout = uniform(0, 1);
-    scheduleAt(simTime() + randomTimeout, startSendingLogEntries);
+    scheduleAt(simTime() + randomTimeout, sendLogEntry);
 }
 
 // the client send only a number to the leader server that insert this number into the log;
@@ -138,7 +138,7 @@ void Client::handleMessage(cMessage *msg)
 
     // ################################################ NORMAL BEHAVIOUR ################################################
 
-    else if (iAmDead)
+    if (iAmDead)
     {
         EV
         << "At the moment I'm dead so I can't react to this message, sorry \n";
@@ -146,27 +146,25 @@ void Client::handleMessage(cMessage *msg)
 
     else if (!iAmDead)
     {
-        if (msg == startSendingLogEntries)
+        if (msg == sendLogEntry)
         { // here the timeout has expired; client starts sending logMessage in loop
             if (freeToSend)
             {
                 bubble("I start to send entries.");
                 sendLogMessage(randomVarName);
             }
-
-            double randomTimeout = uniform(0, 1);
-            scheduleAt(simTime() + randomTimeout, startSendingLogEntries);
         }
 
         else if (msg == checkForResponse && !freeToSend)
         {
-            randomIndex = intuniform(0, configuration.size());
+            randomIndex = intuniform(0, configuration.size() - 1);
             leaderAddress = configuration[randomIndex];
             lastLogMessage->setLeaderAddress(leaderAddress);
             bubble("Resending after timeout.");
+            // se scade 2 volte si rompe, usa la dup TO DO
             send(lastLogMessage, "gateClient$o", 0);
             checkForResponse = new cMessage("Start countdown for my request.");
-            scheduleAt(simTime() + 1, checkForResponse);
+            scheduleAt(simTime() + 10, checkForResponse);
         }
 
         if (response != nullptr)
