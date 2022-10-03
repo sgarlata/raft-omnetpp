@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <omnetpp.h>
+#include <algorithm>
 #include "Ping_m.h"
 #include <algorithm>
 #include <list>
@@ -57,9 +58,11 @@ private:
     int networkAddress;
     int serverNumber;
     bool acceptVoteRequest;
+    clientRequestTable requestTable;
 
-    /****** STATE MACHINE ******/
-    state_machine_variable variables[2];
+    /****** STATE MACHINE VARIABLES ******/
+    int var_X = 0;
+    int var_Y = 0;
 
     /****** Persistent state on all servers: ******/
     int currentTerm; // Time is divided into terms, and each term begins with an election. After a successful election, a single leader
@@ -98,8 +101,8 @@ protected:
 
     virtual void initialize() override;
     virtual void handleMessage(cMessage *msg) override;
-    virtual void commitLog(log_entry log);
     virtual void redirectToLeader(int serialNumber, int clientAddress);
+    virtual void sendACKToClient(int clientAddress, int serialNumber);
     virtual void updateCommitIndex();
     virtual void updateState(log_entry log);
     virtual void acceptLog(int leaderAddress, int matchIndex);
@@ -111,6 +114,10 @@ protected:
     virtual void initializeConfiguration();
     virtual void deleteServer();
     virtual void finish() override;
+    virtual void initializeRequestTable(int size);
+    virtual lastClientRequestEntry* getClientRequestEntry(int clientAddress);
+    virtual void addClientRequestEntry(int clientAddress, int serialNumber);
+
 };
 
 Define_Module(Server);
@@ -126,24 +133,30 @@ void Server::initialize()
     WATCH_VECTOR(nextIndex);
     WATCH_VECTOR(matchIndex);
     WATCH(logEntries);
+    WATCH(var_X);
+    WATCH(var_Y);
     serverNumber = (this)->getIndex();
     double realProbability = getParentModule()->par("serverDeadProbability");
     double maxDeathStart = getParentModule()->par("serverMaxDeathStart");
     currentTerm = 1; // or 1
     alreadyVoted = false;
     serverState = FOLLOWER;
+    cDisplayString &dispStr = getDisplayString();
+    dispStr.parse("i=device/server2,bronze");
     numberVoteReceived = 0;
     acceptVoteRequest = true;
     leaderAddress = -1;
     networkAddress = gate("gateServer$i", 0)->getPreviousGate()->getIndex();
     Switch = gate("gateServer$i", 0)->getPreviousGate()->getOwnerModule();
 
+    initializeRequestTable(9);
     initializeConfiguration();
+
     numberVotingMembers = configuration.size();
     for (int i = 0; i < configuration.size(); ++i)
     {
         nextIndex.push_back(0);
-        matchIndex.push_back(0);
+        matchIndex.push_back(-1);
     }
 
     // We define a probability of death and we start a self message that will "shut down" some nodes
@@ -359,20 +372,6 @@ void Server::handleMessage(cMessage *msg)
                         scheduleAt(simTime() + randomDelay2, failureMsg);
                     }
 
-                    // the leader sends RPCAppendEntries messages to all the followers
-                    //                    for (int i = 0; i < configuration.size(); i++)
-                    //                    {
-                    //                        if (i != networkAddress)
-                    //                        {
-                    //                            int h = configuration[i];
-                    //                            HeartBeats *heartBeat = new HeartBeats("im the leader");
-                    //                            heartBeat->setLeaderAddress(networkAddress);
-                    //                            heartBeat->setDestAddress(i);
-                    //                            heartBeat->setLeaderCurrentTerm(currentTerm);
-                    //                            send(heartBeat, "gateServer$o", 0);
-                    //                        }
-                    //                    }
-                    // the leader periodically send the heartBeat
                     heartBeatsReminder = new cMessage("heartBeatsReminder");
                     scheduleAt(simTime(), heartBeatsReminder);
                 }
@@ -390,7 +389,7 @@ void Server::handleMessage(cMessage *msg)
             int leaderCommit = heartBeat->getLeaderCommit();
 
             // ALL SERVERS: If RPC request or response contains term > currentTerm: set currentTerm = term, convert to follower
-            if (term > currentTerm)
+            if (term >= currentTerm)
             {
                 currentTerm = term;
                 cDisplayString &dispStr = getDisplayString();
@@ -460,11 +459,12 @@ void Server::handleMessage(cMessage *msg)
                     // @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
                     // *index of last
                     acceptLog(leaderAddress, newEntryIndex);
+                    if (leaderCommit > commitIndex)
+                    {
+                        commitIndex = min(leaderCommit, newEntryIndex);
+                    }
                 }
-                if (leaderCommit > commitIndex)
-                {
-                    commitIndex = min(leaderCommit, newEntryIndex);
-                }
+
             }
             startAcceptVoteRequestCountdown();
             restartCountdown();
@@ -485,7 +485,6 @@ void Server::handleMessage(cMessage *msg)
                 nextIndex[followerIndex]++;
             }
             // else heartBeat accepted and log is up to date
-            // TO DO: update commit index
         }
         else
         {
@@ -508,38 +507,59 @@ void Server::handleMessage(cMessage *msg)
     }
 
 
-
+    // APPLY CHANGES TO FSM BY EXECUTING OPERATIONS IN THE LOG
     if (msg == applyChangesMsg)
     {
-        // TO DO: apply changes to FSM
+        int counter;
+        if(lastApplied < commitIndex)
+        {
+            for (counter = lastApplied + 1 ; commitIndex > counter; counter++)
+            {
+                updateState(logEntries[counter]);
+                lastApplied++;
+            }
+        }
     }
 
     // LOG MESSAGE REQUEST RECEIVED, it is ignored only if leader transfer process is going on
-    if (logMessage != nullptr && !leaderTransferPhase)
+    if (logMessage != nullptr && !leaderTransferPhase && leaderAddress >= 0)
     {
         int serialNumber = logMessage->getSerialNumber();
         int clientAddress = logMessage->getClientAddress();
+        lastClientRequestEntry* lastReq = getClientRequestEntry(clientAddress);
+        bool alreadyProcessed = false;
+
+        // Immediately send an ack if the request has already been committed
+        if (lastReq != nullptr)
+        {
+            if(lastReq->serialNumber >= serialNumber)
+            {
+                sendACKToClient(clientAddress, serialNumber);
+                alreadyProcessed = true;
+            }
+        }
 
         // Redirect to leader in case the message is received by a follower.
-        if (networkAddress != leaderAddress)
+        if (networkAddress != leaderAddress && !alreadyProcessed)
         {
             redirectToLeader(serialNumber, clientAddress);
         }
         else
         {
             // once a log message is received a new log entry is added in the leader node
-            // TO DO: check whether the log is already in the queue (serial number check)
-            // If that is the case and the log has already been committed, simply reply with a "success" ACK
             log_entry newEntry;
             newEntry.clientAddress = logMessage->getClientAddress();
             newEntry.entryTerm = currentTerm;
             newEntry.operandName = logMessage->getOperandName();
             newEntry.operandValue = logMessage->getOperandValue();
             newEntry.operation = logMessage->getOperation();
+            newEntry.serialNumber = logMessage->getSerialNumber();
             newEntry.entryLogIndex = logEntries.size();
             nextIndex[serverNumber]++;
+            matchIndex[serverNumber]++;
             logEntries.push_back(newEntry);
         }
+
     }
 
     // forced timeout due to leader transfer
@@ -595,22 +615,12 @@ void Server::handleMessage(cMessage *msg)
                     RPCAppendEntriesMsg->setEntry(logEntries[nextLogIndex]);
                     RPCAppendEntriesMsg->setEmpty(false);
                 }
-                else
-                    // follower's log up to date
-                    if (leaderTransferPhase && !timeOutNowSent)
-                    {
-                        tryLeaderTransfer(followerAddr);
-                    }
-                //                }
-                //                else
-                //                {
-                //                    // leader's log is empty, any other log will match with it
-                //                    RPCAppendEntriesMsg->setPrevLogTerm(1);
-                //                    if (leaderTransferPhase && !timeOutNowSent)
-                //                    {
-                //                        tryLeaderTransfer(followerAddr);
-                //                    }
-                //                }
+                // follower's log up to date
+                else if (leaderTransferPhase && !timeOutNowSent)
+                {
+                    tryLeaderTransfer(followerAddr);
+                }
+
                 send(RPCAppendEntriesMsg, "gateServer$o", 0);
             }
         }
@@ -621,14 +631,6 @@ void Server::handleMessage(cMessage *msg)
         double randomTimeout = uniform(0.1, 0.3);
         scheduleAt(simTime() + randomTimeout, heartBeatsReminder);
     }
-}
-
-
-void Server::commitLog(log_entry log)
-{
-    updateState(log);
-    logEntries.push_back(log);
-    // TO DO: update commit state
 }
 
 void Server::acceptLog(int leaderAddress, int matchIndex)
@@ -674,6 +676,16 @@ void Server::redirectToLeader(int serialNumber, int clientAddress)
     send(response, "gateServer$o", 0);
 }
 
+void Server::sendACKToClient(int clientAddress, int serialNumber)
+{
+    LogMessageResponse *ack = new LogMessageResponse("ACK");
+    ack->setClientAddress(clientAddress);
+    ack->setLogSerialNumber(serialNumber);
+    ack->setLeaderAddress(leaderAddress);
+    ack->setSucceded(true);
+    send(ack, "gateServer$o", 0);
+}
+
 void Server::restartCountdown()
 {
     cancelEvent(electionTimeoutExpired);
@@ -686,6 +698,10 @@ void Server::restartCountdown()
 void Server::startAcceptVoteRequestCountdown()
 {
     acceptVoteRequest = false;
+    if (minElectionTimeoutExpired != nullptr)
+    {
+    cancelEvent(minElectionTimeoutExpired);
+    }
     minElectionTimeoutExpired = new cMessage("minElectionCountodwn");
     scheduleAt(simTime() + 1, minElectionTimeoutExpired);
 }
@@ -706,46 +722,80 @@ void Server::updateCommitIndex()
     int lastLogEntryIndex = logEntries.size() - 1;
     int counter = 0;
     int majority = numberVotingMembers / 2;
-    int temp;
+    int temp, serialNumber, clientAddr;
+    lastClientRequestEntry* reqEntry;
+
     if (lastLogEntryIndex > commitIndex)
     {
         for (int i = commitIndex + 1; i <= lastLogEntryIndex and counter < majority; i++)
         {
             temp = std::count(matchIndex.begin(), matchIndex.end(), i);
-            if (temp > majority and logEntries[i].entryTerm == currentTerm)
+            if (temp > majority and logEntries[i].entryTerm == currentTerm and commitIndex < i)
             {
                 commitIndex = i;
-                // TO DO: send reply to client
+                serialNumber = logEntries[i].serialNumber;
+                clientAddr = logEntries[i].clientAddress;
+                reqEntry = getClientRequestEntry(clientAddr);
+                if (reqEntry != nullptr)
+                {
+                    reqEntry->serialNumber = serialNumber;
+                }
+                else
+                {
+                    addClientRequestEntry(clientAddr, serialNumber);
+                }
+                sendACKToClient(clientAddr, serialNumber);
             }
             counter = counter + temp;
         }
     }
 }
 
-// TO DO: redo all this function
+
 void Server::updateState(log_entry log)
 {
-    int index = (int)log.operandName - 65;
-    if (log.operandName == 'S')
+    int* variable;
+    int logSerNum = log.serialNumber;
+    int logClientAddr = log.clientAddress;
+    lastClientRequestEntry* lastReq = getClientRequestEntry(logClientAddr);
+    bool toApply = true;
+
+    // check whether log entry has been already processed or not. If not, update FSM
+    if (lastReq != nullptr)
     {
-        variables[index].val = log.operandValue;
+        if (logSerNum <= lastReq->serialNumber)
+        {
+            toApply = false;
+        }
     }
-    else if (log.operandName == 'A')
+
+    if (toApply)
     {
-        variables[index].val = variables[index].val + log.operandValue;
+        // FSM variable choice
+        if (log.operandName == 'X')
+        {
+            variable = &var_X;
+        }
+        else
+        {
+            variable = &var_X;
+        }
+
+        // FSM variable update
+        if (log.operandName == 'S')
+        {
+            (*variable) = log.operandValue;
+        }
+        else if (log.operandName == 'A')
+        {
+            (*variable) = (*variable) + log.operandValue;
+        }
+        else if (log.operandName == 'M')
+        {
+            *variable = (*variable) * log.operandValue;
+        }
     }
-    else if (log.operandName == 'B')
-    {
-        variables[index].val = variables[index].val - log.operandValue;
-    }
-    else if (log.operandName == 'M')
-    {
-        variables[index].val = variables[index].val * log.operandValue;
-    }
-    else if (log.operandName == 'D')
-    {
-        variables[index].val = variables[index].val / log.operandValue;
-    }
+
 }
 
 void Server::initializeConfiguration()
@@ -806,6 +856,41 @@ std::ostream& operator<<(std::ostream& stream, const std::vector<log_entry> logE
     }
     return stream;
 }
+
+void Server::initializeRequestTable(int size)
+{
+    chainHead toAdd;
+    for (int i = 0; i < size; i++)
+    {
+        toAdd.key = i;
+        requestTable.buckets.push_back(toAdd);
+    }
+    requestTable.size = size;
+}
+
+// returns item from the table. ret nullptr if item is not present
+lastClientRequestEntry* Server::getClientRequestEntry(int clientAddress)
+{
+    int modIndex = clientAddress % requestTable.size;
+
+    for(int i = 0; i < requestTable.buckets[modIndex].chain.size(); i++)
+    {
+        if(requestTable.buckets[modIndex].chain[i].clientAddress == clientAddress)
+            return &requestTable.buckets[modIndex].chain[i];
+    }
+    return nullptr;
+}
+
+void Server::addClientRequestEntry(int clientAddress, int serialNumber)
+{
+    int modIndex = clientAddress % requestTable.size;
+
+    lastClientRequestEntry newItem;
+    newItem.clientAddress = clientAddress;
+    newItem.serialNumber = serialNumber;
+    requestTable.buckets[modIndex].chain.push_back(newItem);
+}
+
 
 void Server::finish()
 {
