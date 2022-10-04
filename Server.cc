@@ -170,6 +170,7 @@ void Server::initialize()
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
 
+    minElectionTimeoutExpired = new cMessage("MinElectionTimeoutExpired");
     // here expires the first timeout; so the first server with timeout expired sends the first leader election message
     electionTimeoutExpired = new cMessage("ElectionTimeoutExpired");
     double randomTimeout = uniform(0.50, 1);
