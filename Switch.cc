@@ -30,7 +30,6 @@ class Switch : public cSimpleModule
 
 private:
     cMessage *message;
-
 protected:
     virtual void handleMessage(cMessage *msg) override;
 };
@@ -51,7 +50,7 @@ void Switch::handleMessage(cMessage *msg)
     LogMessageResponse *logMessageResponse = dynamic_cast<LogMessageResponse *>(msg);
     TimeOutNow *timeout = dynamic_cast<TimeOutNow *>(msg);
 
-    if (voteRequest != nullptr)
+    if ((voteRequest != nullptr) && (gate("gateSwitch$o",  voteRequest->getCandidateAddress())->isConnected()))
     {
         int srcAddress = voteRequest->getCandidateAddress();
         // now i send in broadcast to all other server the vote request
@@ -73,46 +72,45 @@ void Switch::handleMessage(cMessage *msg)
         }
     }
 
-    if (voteReply != nullptr)
+    if ((voteReply != nullptr) && (gate("gateSwitch$o", voteReply->getLeaderAddress())->isConnected()))
     {
         int dest = voteReply->getLeaderAddress();
         VoteReply *voteReplyForward = voteReply->dup();
         send(voteReplyForward, "gateSwitch$o", dest);
     }
 
-    if (heartBeat != nullptr)
+    if ((heartBeat != nullptr) && (gate("gateSwitch$o",  heartBeat->getDestAddress())->isConnected()))
     {
         int dest = heartBeat->getDestAddress();
         HeartBeats *heartBeatForward = heartBeat->dup();
         send(heartBeatForward, "gateSwitch$o", dest);
     }
 
-    if (heartBeatResponse != nullptr)
+    if ((heartBeatResponse != nullptr) && (gate("gateSwitch$o",  heartBeatResponse->getLeaderAddress())->isConnected()))
     {
         int dest = heartBeatResponse->getLeaderAddress();
         HeartBeatResponse *responseForward = heartBeatResponse->dup();
         send(responseForward, "gateSwitch$o", dest);
     }
 
-    if (timeout != nullptr)
+    if ((timeout != nullptr) && (gate("gateSwitch$o",  timeout->getDestAddress())->isConnected()))
     {
         int dest = timeout->getDestAddress();
         TimeOutNow *responseForward = timeout->dup();
         send(responseForward, "gateSwitch$o", dest);
     }
 
-    if (logMessage != nullptr)
+    if ((logMessage != nullptr) && (gate("gateSwitch$o", logMessage->getLeaderAddress())->isConnected()))
     {
         int dest = logMessage->getLeaderAddress();
         LogMessage *logMessageForward = logMessage->dup();
         send(logMessageForward, "gateSwitch$o", dest);
     }
 
-    if (logMessageResponse != nullptr)
+    if ((logMessageResponse != nullptr) && (gate("gateSwitch$o",  logMessageResponse->getClientAddress())->isConnected()))
     {
         int dest = logMessageResponse->getClientAddress();
         LogMessageResponse *responseForward = logMessageResponse->dup();
         send(responseForward, "gateSwitch$o", dest);
     }
-
 }
