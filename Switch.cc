@@ -27,9 +27,6 @@ using namespace omnetpp;
 
 class Switch : public cSimpleModule
 {
-
-private:
-    cMessage *message;
 protected:
     virtual void handleMessage(cMessage *msg) override;
 };
@@ -40,10 +37,8 @@ Define_Module(Switch);
 // invoked every time a message enters in the node
 void Switch::handleMessage(cMessage *msg)
 {
-    Ping *ping = dynamic_cast<Ping *>(msg);
     VoteReply *voteReply = dynamic_cast<VoteReply *>(msg);
     VoteRequest *voteRequest = dynamic_cast<VoteRequest *>(msg);
-    LeaderElection *leaderElection = dynamic_cast<LeaderElection *>(msg);
     HeartBeats *heartBeat = dynamic_cast<HeartBeats *>(msg);
     HeartBeatResponse *heartBeatResponse = dynamic_cast<HeartBeatResponse *>(msg);
     LogMessage *logMessage = dynamic_cast<LogMessage *>(msg);

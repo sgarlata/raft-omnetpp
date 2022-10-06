@@ -164,7 +164,7 @@ void Client::handleMessage(cMessage *msg)
             send(newMex, "gateClient$o", 0);
 
             reqTimeoutExpired = new cMessage("Timeout expired.");
-            scheduleAt(simTime() + 5, reqTimeoutExpired);
+            scheduleAt(simTime() + 2, reqTimeoutExpired);
         }
 
         if (response != nullptr)
@@ -224,7 +224,7 @@ void Client::sendRandomMessage()
     char randomOperation = convertToChar(intToChar);
     int intToConvert = intuniform(88, 89); // ASCII code for x and y
     char randomVarName = (char)intToConvert;
-    int randomOperand = intuniform(0, 20);
+    int randomOperand = intuniform(-10, 10);
     scheduleNewMessage(randomOperation, randomVarName, randomOperand);
 }
 

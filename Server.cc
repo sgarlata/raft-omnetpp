@@ -25,6 +25,8 @@
 #include "TimeOutNow_m.h"
 
 using namespace omnetpp;
+using std::to_string;
+using std::count;
 
 class Server : public cSimpleModule
 {
@@ -58,11 +60,10 @@ private:
     int networkAddress;
     int serverNumber;
     bool acceptVoteRequest;
-    clientRequestTable requestTable;
 
     /****** STATE MACHINE VARIABLES ******/
-    int var_X = 0;
-    int var_Y = 0;
+    int var_X;
+    int var_Y;
 
     /****** Persistent state on all servers: ******/
     int currentTerm; // Time is divided into terms, and each term begins with an election. After a successful election, a single leader
@@ -103,7 +104,6 @@ protected:
     virtual void handleMessage(cMessage *msg) override;
     virtual void redirectToLeader(int serialNumber, int clientAddress);
     virtual void sendACKToClient(int clientAddress, int serialNumber);
-    virtual void updateCommitIndex();
     virtual void updateState(log_entry log);
     virtual void acceptLog(int leaderAddress, int matchIndex);
     virtual void startAcceptVoteRequestCountdown();
@@ -114,9 +114,9 @@ protected:
     virtual void initializeConfiguration();
     virtual void deleteServer();
     virtual void finish() override;
-    virtual void initializeRequestTable(int size);
-    virtual lastClientRequestEntry* getClientRequestEntry(int clientAddress);
-    virtual void addClientRequestEntry(int clientAddress, int serialNumber);
+    virtual int getLastSerialNumberFromClient(int clientAddress);
+    virtual void updateCommitIndexOnLeader();
+    virtual bool needsToBeProcessed(int serialNumber, int clientAddress);
 
 };
 
@@ -148,10 +148,9 @@ void Server::initialize()
     leaderAddress = -1;
     networkAddress = gate("gateServer$i", 0)->getPreviousGate()->getIndex();
     Switch = gate("gateServer$i", 0)->getPreviousGate()->getOwnerModule();
-
-    initializeRequestTable(9);
+    var_X = 0;
+    var_Y = 0;
     initializeConfiguration();
-
     numberVotingMembers = configuration.size();
     for (int i = 0; i < configuration.size(); ++i)
     {
@@ -166,7 +165,7 @@ void Server::initialize()
         double randomDelay = uniform(1, maxDeathStart);
         failureMsg = new cMessage("failureMsg");
         EV
-        << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay) + " seconds...\n";
+        << "Here is server[" + to_string(serverNumber) + "]: I will be dead in " + to_string(randomDelay) + " seconds...\n";
         scheduleAt(simTime() + randomDelay, failureMsg);
     }
 
@@ -200,7 +199,7 @@ void Server::handleMessage(cMessage *msg)
         double maxDeathDuration = getParentModule()->par("serverMaxDeathDuration");
         double randomFailureTime = uniform(5, maxDeathDuration);
         EV
-        << "\nServer ID: [" + std::to_string(this->getIndex()) + "] is dead for about: [" + std::to_string(randomFailureTime) + "]\n";
+        << "\nServer ID: [" + to_string(this->getIndex()) + "] is dead for about: [" + to_string(randomFailureTime) + "]\n";
         recoveryMsg = new cMessage("recoveryMsg");
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }
@@ -208,7 +207,7 @@ void Server::handleMessage(cMessage *msg)
     else if (msg == recoveryMsg)
     {
         iAmDead = false;
-        EV << "Here is server[" + std::to_string(this->getIndex()) + "]: I am no more dead... \n";
+        EV << "Here is server[" + to_string(serverNumber) + "]: I am no more dead... \n";
         bubble("im returned alive");
         cDisplayString &dispStr = getDisplayString();
         dispStr.parse("i=device/server2,bronze");
@@ -229,7 +228,7 @@ void Server::handleMessage(cMessage *msg)
             double randomDelay1 = uniform(1, maxDeathStart1);
             failureMsg = new cMessage("failureMsg");
             EV
-            << "Here is server[" + std::to_string(this->getIndex()) + "]: I will be dead in " + std::to_string(randomDelay1) + " seconds...\n";
+            << "Here is server[" + to_string(serverNumber) + "]: I will be dead in " + to_string(randomDelay1) + " seconds...\n";
             scheduleAt(simTime() + randomDelay1, failureMsg);
         }
     }
@@ -369,7 +368,7 @@ void Server::handleMessage(cMessage *msg)
                         double randomDelay2 = uniform(1, leaderMaxDeath);
                         failureMsg = new cMessage("failureMsg");
                         EV
-                        << "Here is server[" + std::to_string(serverNumber) + "]: I will be dead in " + std::to_string(randomDelay2) + " seconds...\n";
+                        << "Here is server[" + to_string(serverNumber) + "]: I will be dead in " + to_string(randomDelay2) + " seconds...\n";
                         scheduleAt(simTime() + randomDelay2, failureMsg);
                     }
 
@@ -404,7 +403,7 @@ void Server::handleMessage(cMessage *msg)
 
             // @ensure LOG MATCHING PROPERTY
             // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
-            if (term < currentTerm)
+            else
             {
                 rejectLog(leaderAddress);
             }
@@ -476,11 +475,13 @@ void Server::handleMessage(cMessage *msg)
     {
         int followerIndex = heartBeatResponse->getFollowerIndex();
         int followerLogLength = heartBeatResponse->getLogLength();
+        int followerMatchIndex = heartBeatResponse->getMatchIndex();
         int logSize = logEntries.size();
         if (heartBeatResponse->getSucceded())
         {
             // heartBeat accepted and log still needs some update
-            if (nextIndex[followerIndex] < logSize)
+            // the second condition is necessary to avoid race conditions
+            if (nextIndex[followerIndex] < logSize && nextIndex[followerIndex] == followerMatchIndex)
             {
                 matchIndex[followerIndex] = nextIndex[followerIndex];
                 nextIndex[followerIndex]++;
@@ -499,7 +500,7 @@ void Server::handleMessage(cMessage *msg)
                 nextIndex[followerIndex]--;
             }
         }
-        updateCommitIndex();
+        updateCommitIndexOnLeader();
     }
 
     if (msg == minElectionTimeoutExpired)
@@ -511,15 +512,17 @@ void Server::handleMessage(cMessage *msg)
     // APPLY CHANGES TO FSM BY EXECUTING OPERATIONS IN THE LOG
     if (msg == applyChangesMsg)
     {
-        int counter;
+        int applyNextIndex;
         if(lastApplied < commitIndex)
         {
-            for (counter = lastApplied + 1 ; commitIndex > counter; counter++)
+            for (applyNextIndex = lastApplied + 1 ; commitIndex > lastApplied; applyNextIndex++)
             {
-                updateState(logEntries[counter]);
+                updateState(logEntries[applyNextIndex]);
                 lastApplied++;
             }
         }
+        applyChangesMsg = new cMessage("Apply changes to State Machine");
+        scheduleAt(simTime() + 2, applyChangesMsg);
     }
 
     // LOG MESSAGE REQUEST RECEIVED, it is ignored only if leader transfer process is going on
@@ -527,18 +530,16 @@ void Server::handleMessage(cMessage *msg)
     {
         int serialNumber = logMessage->getSerialNumber();
         int clientAddress = logMessage->getClientAddress();
-        lastClientRequestEntry* lastReq = getClientRequestEntry(clientAddress);
+        int lastReqSerialNumber = getLastSerialNumberFromClient(clientAddress);
         bool alreadyProcessed = false;
 
         // Immediately send an ack if the request has already been committed
-        if (lastReq != nullptr)
+        if(lastReqSerialNumber >= serialNumber)
         {
-            if(lastReq->serialNumber >= serialNumber)
-            {
-                sendACKToClient(clientAddress, serialNumber);
-                alreadyProcessed = true;
-            }
+            sendACKToClient(clientAddress, serialNumber);
+            alreadyProcessed = true;
         }
+
 
         // Redirect to leader in case the message is received by a follower.
         if (networkAddress != leaderAddress && !alreadyProcessed)
@@ -625,8 +626,6 @@ void Server::handleMessage(cMessage *msg)
                 send(RPCAppendEntriesMsg, "gateServer$o", 0);
             }
         }
-        applyChangesMsg = new cMessage("Apply changes to State Machine");
-        scheduleAt(simTime() + 5, applyChangesMsg);
 
         heartBeatsReminder = new cMessage("heartBeatsReminder");
         double randomTimeout = uniform(0.1, 0.3);
@@ -701,7 +700,7 @@ void Server::startAcceptVoteRequestCountdown()
     acceptVoteRequest = false;
     if (minElectionTimeoutExpired != nullptr)
     {
-    cancelEvent(minElectionTimeoutExpired);
+        cancelEvent(minElectionTimeoutExpired);
     }
     minElectionTimeoutExpired = new cMessage("minElectionCountodwn");
     scheduleAt(simTime() + 1, minElectionTimeoutExpired);
@@ -718,33 +717,23 @@ int Server::min(int a, int b)
 // If there exists an N such that N > commitIndex, a majority of matchIndex[i] >= N,
 // and log[N].term == currentTerm: set commitIndex = N
 // TO DO: non voting members
-void Server::updateCommitIndex()
+void Server::updateCommitIndexOnLeader()
 {
     int lastLogEntryIndex = logEntries.size() - 1;
     int counter = 0;
     int majority = numberVotingMembers / 2;
     int temp, serialNumber, clientAddr;
-    lastClientRequestEntry* reqEntry;
 
     if (lastLogEntryIndex > commitIndex)
     {
         for (int i = commitIndex + 1; i <= lastLogEntryIndex and counter < majority; i++)
         {
-            temp = std::count(matchIndex.begin(), matchIndex.end(), i);
+            temp = count(matchIndex.begin(), matchIndex.end(), i);
             if (temp > majority and logEntries[i].entryTerm == currentTerm and commitIndex < i)
             {
                 commitIndex = i;
-                serialNumber = logEntries[i].serialNumber;
                 clientAddr = logEntries[i].clientAddress;
-                reqEntry = getClientRequestEntry(clientAddr);
-                if (reqEntry != nullptr)
-                {
-                    reqEntry->serialNumber = serialNumber;
-                }
-                else
-                {
-                    addClientRequestEntry(clientAddr, serialNumber);
-                }
+                serialNumber = logEntries[i].serialNumber;
                 sendACKToClient(clientAddr, serialNumber);
             }
             counter = counter + temp;
@@ -758,19 +747,8 @@ void Server::updateState(log_entry log)
     int* variable;
     int logSerNum = log.serialNumber;
     int logClientAddr = log.clientAddress;
-    lastClientRequestEntry* lastReq = getClientRequestEntry(logClientAddr);
-    bool toApply = true;
 
-    // check whether log entry has been already processed or not. If not, update FSM
-    if (lastReq != nullptr)
-    {
-        if (logSerNum <= lastReq->serialNumber)
-        {
-            toApply = false;
-        }
-    }
-
-    if (toApply)
+    if (needsToBeProcessed(logSerNum, logClientAddr))
     {
         // FSM variable choice
         if (log.operandName == 'X')
@@ -783,15 +761,15 @@ void Server::updateState(log_entry log)
         }
 
         // FSM variable update
-        if (log.operandName == 'S')
+        if (log.operation == 'S')
         {
             (*variable) = log.operandValue;
         }
-        else if (log.operandName == 'A')
+        else if (log.operation == 'A')
         {
             (*variable) = (*variable) + log.operandValue;
         }
-        else if (log.operandName == 'M')
+        else if (log.operation == 'M')
         {
             *variable = (*variable) * log.operandValue;
         }
@@ -858,38 +836,34 @@ std::ostream& operator<<(std::ostream& stream, const std::vector<log_entry> logE
     return stream;
 }
 
-void Server::initializeRequestTable(int size)
+
+int Server::getLastSerialNumberFromClient(int clientAddress)
 {
-    chainHead toAdd;
-    for (int i = 0; i < size; i++)
+    for(int i = commitIndex; i >= 0 ; i--)
     {
-        toAdd.key = i;
-        requestTable.buckets.push_back(toAdd);
+        if(logEntries[i].clientAddress == clientAddress)
+            return logEntries[i].serialNumber;
     }
-    requestTable.size = size;
+    return 0;
 }
 
-// returns item from the table. ret nullptr if item is not present
-lastClientRequestEntry* Server::getClientRequestEntry(int clientAddress)
+bool Server::needsToBeProcessed(int serialNumber, int clientAddress)
 {
-    int modIndex = clientAddress % requestTable.size;
-
-    for(int i = 0; i < requestTable.buckets[modIndex].chain.size(); i++)
+    for(int i = lastApplied; i >= 0; i--)
     {
-        if(requestTable.buckets[modIndex].chain[i].clientAddress == clientAddress)
-            return &requestTable.buckets[modIndex].chain[i];
+        if(logEntries[i].clientAddress == clientAddress)
+        {
+            if(logEntries[i].serialNumber >= serialNumber)
+            {
+                return false;
+            }
+            else
+            {
+                return true;
+            }
+        }
     }
-    return nullptr;
-}
-
-void Server::addClientRequestEntry(int clientAddress, int serialNumber)
-{
-    int modIndex = clientAddress % requestTable.size;
-
-    lastClientRequestEntry newItem;
-    newItem.clientAddress = clientAddress;
-    newItem.serialNumber = serialNumber;
-    requestTable.buckets[modIndex].chain.push_back(newItem);
+    return true;
 }
 
 
