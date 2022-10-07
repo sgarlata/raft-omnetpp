@@ -16,26 +16,32 @@
 #include "LogMessageResponse_m.h"
 
 using namespace omnetpp;
+using std::vector;
+using std::__cxx11::to_string;
+using std::string;
 using std::to_string;
+using std::count;
 
 class Client : public cSimpleModule
 {
 private:
     bool iAmDead;     // this is useful to shut down a client
-    int numberToSend; // this is the number that the client send to the leader, we register this number into the log
+    int numClient;
+    int activationCrashLink;
 
     cMessage *failureMsg;             // this message is useful to shut down a client
     cMessage *recoveryMsg;            // this message is useful to revive a client
     cMessage *sendToLog;              // this is a message only for leader server, this message contains the number for log
     cMessage *sendLogEntry;           // send a request to the leader
     cMessage *reqTimeoutExpired;       // autoMessage to check whether the last request was acknowledged
+    cMessage *channelLinkProblem;
 
     cGate *currLeaderOutputGate;
 
     int leaderAddress;
     int randomIndex; // Random index for the leader within the client's configuration vector
     int networkAddress;
-    std::vector<int> configuration;
+    vector<int> configuration;
 
     // Each command must have a unique ID. Solution: the ID (within the network) of the given Client module first, followed by a counter.
     int commandCounter;
@@ -46,6 +52,8 @@ private:
     bool freeToSend = true; // True if the last request was acknowledged by the leader
 
     LogMessage *lastLogMessage = nullptr;
+
+    cModule *Switch;
 
 protected:
     virtual void initialize() override;
@@ -61,13 +69,13 @@ Define_Module(Client);
 
 void Client::initialize()
 {
-
     WATCH(iAmDead);
     WATCH_VECTOR(configuration);
     WATCH(leaderAddress);
     iAmDead = false;
 
     networkAddress = gate("gateClient$i", 0)->getPreviousGate()->getIndex();
+    Switch = gate("gateClient$i", 0)->getPreviousGate()->getOwnerModule();
     initializeConfiguration();
 
     randomIndex = intuniform(0, configuration.size() - 1); // The first request is sent to a random server
@@ -91,13 +99,19 @@ void Client::initialize()
     sendLogEntry = new cMessage("I start to send entries.");
     double randomTimeout = uniform(0, 1);
     scheduleAt(simTime() + randomTimeout, sendLogEntry);
+
+    activationCrashLink = getParentModule()->par("activationlinkCrashClient");
+    if (activationCrashLink == 1){
+        channelLinkProblem = new cMessage("channel connection problem begins");
+        double random = uniform(0, 6);
+        scheduleAt(simTime() + random, channelLinkProblem);
+    }
 }
 
 // the client send only a number to the leader server that insert this number into the log;
 // than the client receive a message from the leader that confirms this operation.
 void Client::handleMessage(cMessage *msg)
 {
-    Ping *ping = dynamic_cast<Ping *>(msg);
     LogMessageResponse *response = dynamic_cast<LogMessageResponse *>(msg);
 
     // ############################################### RECOVERY BEHAVIOUR ###############################################
@@ -161,10 +175,11 @@ void Client::handleMessage(cMessage *msg)
             leaderAddress = configuration[randomIndex];
             lastLogMessage->setLeaderAddress(leaderAddress);
             LogMessage *newMex = lastLogMessage->dup();
-            send(newMex, "gateClient$o", 0);
+            if(gate("gateClient$o", 0)->isConnected())
+                send(newMex, "gateClient$o", 0);
 
             reqTimeoutExpired = new cMessage("Timeout expired.");
-            scheduleAt(simTime() + 2, reqTimeoutExpired);
+            scheduleAt(simTime() + 1, reqTimeoutExpired);
         }
 
         if (response != nullptr)
@@ -186,11 +201,47 @@ void Client::handleMessage(cMessage *msg)
                 lastLogMessage->setLeaderAddress(leaderAddress);
                 LogMessage *newMessage = lastLogMessage->dup();
                 cancelEvent(reqTimeoutExpired);
-                send(newMessage, "gateClient$o", 0);
+                if(gate("gateClient$o", 0)->isConnected())
+                    send(newMessage, "gateClient$o", 0);
 
                 reqTimeoutExpired = new cMessage("Start countdown for my request.");
                 scheduleAt(simTime() + 1, reqTimeoutExpired);
             }
+        }
+
+        if(msg == channelLinkProblem){
+            int decision = intuniform(0,1);//if decision is 1 i restore a random link; if it is 0 i delete a random link
+            int gateINOUT = intuniform(0,1);// if gateINOUT is 1 i delete the in gate; else i delete the out gate
+            if (decision == 0){//here i delete a link
+                if(gateINOUT == 0){// i delete an out gate
+                    if(gate("gateClient$o", 0)->isConnected())
+                        gate("gateClient$o", 0)->disconnect();
+                }else{//i delete the in gate
+                    if(Switch->gate("gateSwitch$o",this->getIndex()+5)->isConnected())
+                        Switch->gate("gateSwitch$o",this->getIndex())->disconnect();
+                }
+            }
+            else{//here i restore a link with the same method of the delete
+                if(gateINOUT == 0){// i restore an out gate
+                    if(!(gate("gateClient$o", 0)->isConnected())){
+                        cDelayChannel *delayChannelOUT = cDelayChannel::create("myChannel");
+                        delayChannelOUT->setDelay(0.1);
+
+                        this->gate("gateClient$o", 0)->connectTo(Switch->gate("gateSwitch$i", this->getIndex()+5), delayChannelOUT);
+                    }
+                }
+                else{ //i restore the in gate
+                    if(!(Switch->gate("gateSwitch$o",this->getIndex()+5)->isConnected())){
+                        cDelayChannel *delayChannelIN = cDelayChannel::create("myChannel");
+                        delayChannelIN->setDelay(0.1);
+
+                        Switch->gate("gateSwitch$o",this->getIndex()+5)->connectTo(this->gate("gateClient$i", 0),delayChannelIN);
+                    }
+                }
+            }
+            channelLinkProblem = new cMessage("another channel connection problem");
+            double randomDelay = uniform(0, 3);
+            scheduleAt(simTime() + randomDelay, channelLinkProblem);
         }
     }
 }
@@ -211,7 +262,8 @@ void Client::scheduleNewMessage(char operation, char varName, int value)
     lastLogMessage = logMessage->dup();
     WATCH(operation);
     WATCH(value);
-    send(logMessage, "gateClient$o", 0);
+    if(gate("gateClient$o", 0)->isConnected())
+        send(logMessage, "gateClient$o", 0);
     freeToSend = false;
 
     reqTimeoutExpired = new cMessage("Start countdown for my request.");
@@ -224,7 +276,7 @@ void Client::sendRandomMessage()
     char randomOperation = convertToChar(intToChar);
     int intToConvert = intuniform(88, 89); // ASCII code for x and y
     char randomVarName = (char)intToConvert;
-    int randomOperand = intuniform(-10, 10);
+    int randomOperand = intuniform(-10,10);
     scheduleNewMessage(randomOperation, randomVarName, randomOperand);
 }
 
