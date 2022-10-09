@@ -129,7 +129,7 @@ void Client::handleMessage(cMessage *msg)
         // here we schedule the next client crash
         scheduleNextCrash();
         // restart sending messages
-        sendLogEntry = new cMessage("I start to send entries.");
+        sendLogEntry = new cMessage("Sending requests");
         double randomTimeout = uniform(0, 1);
         scheduleAt(simTime() + randomTimeout, sendLogEntry);
     }
@@ -150,6 +150,11 @@ void Client::handleMessage(cMessage *msg)
             if (freeToSend)
             {
                 sendRandomMessage();
+            }
+            else
+            {
+                tryAgainMsg = new cMessage("Try again.");
+                scheduleAt(simTime() + 2, tryAgainMsg);
             }
         }
 

@@ -911,12 +911,12 @@ void Server::updateCommitIndexOnLeader()
             temp = countGreaterOrEqual(i);
             if (temp > majority and logEntries[i].entryTerm == currentTerm and counter < majority)
             {
-                for (int j = commitIndex + 1; j <= i; j++)
+                for (int nextCommitIndex = commitIndex + 1; nextCommitIndex <= i; nextCommitIndex++)
                 {
-                    commitIndex = j;
+                    commitIndex = nextCommitIndex;
                     // here we update the hash table, registering the new commit
-                    clientAddr = logEntries[j].clientAddress;
-                    serialNumber = logEntries[j].serialNumber;
+                    clientAddr = logEntries[nextCommitIndex].clientAddress;
+                    serialNumber = logEntries[nextCommitIndex].serialNumber;
                     // but only if it is a real request from a client and not a NOP
                     if(clientAddr != NO_CLIENT)
                     {
