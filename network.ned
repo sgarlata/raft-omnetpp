@@ -32,16 +32,6 @@ simple Server
         inout gateServer[];
 }
 
-//this module represent the the entity that manages configuration changes
-simple ConfigurationManager
-{
-    parameters:
-        @display("i=abstract/penguin_l");
-    gates:
-        inout gateConfigurationManager[];
-}
-
-
 simple Switch
 {
     parameters:
@@ -90,9 +80,6 @@ network Network
                 @display("i=,bronze;");
         }
         
-        configurationManager: ConfigurationManager {        		
-        }
-        
         switch: Switch {
                 @display("p=380,200");
         }
@@ -105,7 +92,5 @@ network Network
         for i=0..numClient-1 {
                 client[i].gateClient++ <--> myChannel <--> switch.gateSwitch++;
         }
-        
-        configurationManager.gateConfigurationManager++ <--> myChannel <--> switch.gateSwitch++;
         
 }
