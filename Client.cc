@@ -25,18 +25,15 @@ using std::count;
 class Client : public cSimpleModule
 {
 private:
-    bool iAmDead;     // this is useful to shut down a client
-    int numClient;
+    bool crashed;     // this is useful to shut down a client
     int activationCrashLink;
 
     cMessage *failureMsg;             // this message is useful to shut down a client
     cMessage *recoveryMsg;            // this message is useful to revive a client
-    cMessage *sendToLog;              // this is a message only for leader server, this message contains the number for log
     cMessage *sendLogEntry;           // send a request to the leader
     cMessage *reqTimeoutExpired;       // autoMessage to check whether the last request was acknowledged
+    cMessage *tryAgainMsg;
     cMessage *channelLinkProblem;
-
-    cGate *currLeaderOutputGate;
 
     int leaderAddress;
     int randomIndex; // Random index for the leader within the client's configuration vector
@@ -45,15 +42,14 @@ private:
 
     // Each command must have a unique ID. Solution: the ID (within the network) of the given Client module first, followed by a counter.
     int commandCounter;
-    char randomOperation;
-    int randomValue;
-    int intToConvert;
-    char randomVarName;
     bool freeToSend = true; // True if the last request was acknowledged by the leader
 
     LogMessage *lastLogMessage = nullptr;
 
     cModule *Switch;
+    double clientCrashProbability;
+    double maxCrashDelay;
+
 
 protected:
     virtual void initialize() override;
@@ -62,6 +58,7 @@ protected:
     virtual void scheduleNewMessage(char operation, char varName, int value); // this method is useful to generate a message that a client have to send to the log in the leader server (WORK IN PROGRESS)
     virtual void sendRandomMessage();
     virtual void initializeConfiguration();
+    virtual void scheduleNextCrash();
     virtual char convertToChar(int operation);
 };
 
@@ -69,12 +66,13 @@ Define_Module(Client);
 
 void Client::initialize()
 {
-    WATCH(iAmDead);
+    WATCH(crashed);
     WATCH_VECTOR(configuration);
     WATCH(leaderAddress);
-    iAmDead = false;
+    crashed = false;
 
     networkAddress = gate("gateClient$i", 0)->getPreviousGate()->getIndex();
+
     Switch = gate("gateClient$i", 0)->getPreviousGate()->getOwnerModule();
     initializeConfiguration();
 
@@ -82,19 +80,10 @@ void Client::initialize()
     leaderAddress = configuration[randomIndex];
     commandCounter = 0;
 
-    double realProb = getParentModule()->par("clientsDeadProbability");
-    double maxDeathStart = getParentModule()->par("clientsMaxDeathStart");
+    clientCrashProbability = getParentModule()->par("clientsCrashProbability");
+    maxCrashDelay = getParentModule()->par("clientsMaxCrashDelay");
 
-    // We define a probability of death and we start a self message that will "shut down" some nodes
-    double deadProbability = uniform(0, 1);
-    if (deadProbability < realProb)
-    {
-        double randomDelay = uniform(1, maxDeathStart);
-        failureMsg = new cMessage("failureMsg");
-        EV
-        << "Here is client[" + to_string(this->getId()) + "]: I will be dead in " + to_string(randomDelay) + " seconds...\n";
-        scheduleAt(simTime() + randomDelay, failureMsg);
-    }
+    scheduleNextCrash();
     // here expires the first timeout; so the first server with timeout expired sends the first leader election message
     sendLogEntry = new cMessage("I start to send entries.");
     double randomTimeout = uniform(0, 1);
@@ -119,51 +108,47 @@ void Client::handleMessage(cMessage *msg)
     if (msg == failureMsg)
     {
         // Change status
-        iAmDead = true;
-
+        crashed = true;
+        cDisplayString &dispStr = getDisplayString();
+        dispStr.parse("i=device/pc,red");
+        bubble("Client crash");
         // Schedule Recovery Message
         recoveryMsg = new cMessage("recoveryMsg");
-        double maxDeathDuration = getParentModule()->par(
-                "clientsMaxDeathDuration");
-        double randomFailureTime = uniform(5, maxDeathDuration);
-        EV
-        << "\nClient[" + to_string(this->getIndex()) + "] is dead for about: [" + to_string(randomFailureTime) + "]\n";
+        double randomFailureTime = uniform(1, 2);
+        EV << "\nClient will be down for about " + to_string(randomFailureTime) + " seconds\n";
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }
 
-    else if (msg == recoveryMsg)
+    if (msg == recoveryMsg)
     {
-        iAmDead = false;
-        EV << "I'm back, let's start working again!\n";
-        // here i kill again clients in order to have a simulations where all clients continuously goes down
-        double maxDeathStart1 = uniform(1, 10);
-        double realProbability1 = 0.9;
-        double deadProbability1 = uniform(0, 1);
-        if (deadProbability1 < realProbability1)
-        {
-            double randomDelay1 = uniform(1, maxDeathStart1);
-            failureMsg = new cMessage("failureMsg");
-            EV
-            << "Here is server[" + to_string(this->getIndex()) + "]: I will be dead in " + to_string(randomDelay1) + " seconds...\n";
-            scheduleAt(simTime() + randomDelay1, failureMsg);
-        }
+        crashed = false;
+        cDisplayString &dispStr = getDisplayString();
+        dispStr.parse("i=device/pc,cyan");
+        bubble("Client recover");
+        EV << "Client: I'm back, let's start working again!\n";
+        // here we schedule the next client crash
+        scheduleNextCrash();
+        // restart sending messages
+        sendLogEntry = new cMessage("I start to send entries.");
+        double randomTimeout = uniform(0, 1);
+        scheduleAt(simTime() + randomTimeout, sendLogEntry);
     }
 
     // ################################################ NORMAL BEHAVIOUR ################################################
 
-    if (iAmDead)
+    if (crashed)
     {
         EV
-        << "At the moment I'm dead so I can't react to this message, sorry \n";
+        << "CLIENT CRASHED: cannot react to messages \n";
     }
 
-    else if (!iAmDead)
+    else
     {
         if (msg == sendLogEntry)
-        { // here the timeout has expired; client starts sending logMessage in loop
+        {
+            // here the timeout has expired; client starts sending logMessage in loop
             if (freeToSend)
             {
-                bubble("I start to send entries.");
                 sendRandomMessage();
             }
         }
@@ -182,6 +167,15 @@ void Client::handleMessage(cMessage *msg)
             scheduleAt(simTime() + 1, reqTimeoutExpired);
         }
 
+        else if (msg == tryAgainMsg)
+        {
+            LogMessage *newMessage = lastLogMessage->dup();
+            if(gate("gateClient$o", 0)->isConnected())
+                send(newMessage, "gateClient$o", 0);
+            reqTimeoutExpired = new cMessage("Timeout expired.");
+            scheduleAt(simTime() + 1, reqTimeoutExpired);
+        }
+
         if (response != nullptr)
         {
             // Request acknowledged
@@ -196,16 +190,27 @@ void Client::handleMessage(cMessage *msg)
             }
             else
             {
-                bubble("Redirecting command to the leader.");
-                leaderAddress = response->getLeaderAddress();
-                lastLogMessage->setLeaderAddress(leaderAddress);
-                LogMessage *newMessage = lastLogMessage->dup();
                 cancelEvent(reqTimeoutExpired);
-                if(gate("gateClient$o", 0)->isConnected())
-                    send(newMessage, "gateClient$o", 0);
 
-                reqTimeoutExpired = new cMessage("Start countdown for my request.");
-                scheduleAt(simTime() + 1, reqTimeoutExpired);
+                if(response->getRedirect())
+                {
+                    // REDIRECT TO ANOTHER SERVER, POSSIBLY THE LEADER
+                    bubble("Redirecting command to the leader.");
+                    leaderAddress = response->getLeaderAddress();
+                    lastLogMessage->setLeaderAddress(leaderAddress);
+                    LogMessage *newMessage = lastLogMessage->dup();
+                    if(gate("gateClient$o", 0)->isConnected())
+                        send(newMessage, "gateClient$o", 0);
+                    reqTimeoutExpired = new cMessage("Timeout expired.");
+                    scheduleAt(simTime() + 1, reqTimeoutExpired);
+                }
+                else
+                {
+                    // TELL THE CLIENT TO WAIT FOR COMMIT
+                    bubble("Waiting for commit.");
+                    tryAgainMsg = new cMessage("Try again.");
+                    scheduleAt(simTime() + 2, tryAgainMsg);
+                }
             }
         }
 
@@ -297,6 +302,19 @@ void Client::initializeConfiguration()
                 configuration.push_back(serverAddress);
             }
         }
+    }
+}
+
+void Client::scheduleNextCrash()
+{
+    double crashProbabilitySample = uniform(0, 1);
+    if (crashProbabilitySample < clientCrashProbability)
+    {
+        double randomDelay = uniform(1, maxCrashDelay);
+        failureMsg = new cMessage("failureMsg");
+        EV
+        << "Here is client: I will crash in " + to_string(randomDelay) + " seconds...\n";
+        scheduleAt(simTime() + randomDelay, failureMsg);
     }
 }
 

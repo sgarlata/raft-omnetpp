@@ -1,7 +1,7 @@
 // client notifies log reception 
 message HeartBeatResponse {
     int leaderAddress;
-    int followerIndex;
+    int followerNumber;
     int logLength;
     int term;
     int matchIndex; // index of the entry in the leader's log

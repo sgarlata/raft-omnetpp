@@ -18,4 +18,5 @@ message LogMessageResponse {
     int leaderAddress;
     int logSerialNumber;
     bool succeded;
+    bool redirect;
 }

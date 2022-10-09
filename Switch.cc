@@ -27,12 +27,21 @@ using namespace omnetpp;
 
 class Switch : public cSimpleModule
 {
+private:
+    int numberOfServers;
+    int numberOfClients;
 protected:
+    virtual void initialize() override;
     virtual void handleMessage(cMessage *msg) override;
 };
 
 Define_Module(Switch);
 
+void Switch::initialize()
+{
+    numberOfServers = getParentModule()->par("numServer");
+    numberOfClients = getParentModule()->par("numClient");
+}
 // here i redefine handleMessage method
 // invoked every time a message enters in the node
 void Switch::handleMessage(cMessage *msg)
