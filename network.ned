@@ -18,7 +18,7 @@
 simple Client
 {
     parameters:
-        @display("i=device/pc2");
+        @display("i=device/pc");
     gates:
         inout gateClient[];
 }
@@ -32,10 +32,19 @@ simple Server
         inout gateServer[];
 }
 
+//this module represent the the entity that manages configuration changes
+simple ConfigurationManager
+{
+    parameters:
+        @display("i=abstract/penguin_l");
+    gates:
+        inout gateConfigurationManager[];
+}
+
 
 simple Switch
 {
-	parameters:
+    parameters:
         @display("i=device/switch");
     gates:
         inout gateSwitch[];
@@ -44,47 +53,59 @@ simple Switch
 network Network
 {
     parameters:
-        //this is the number of client that i want to create
+        // initial number of clients
         int numClient @prompt("Number of client") = default(1);
-	    //this is the number of server that i want to create
+        // initial number of servers
         int numServer @prompt("Number of server") = default(5);
-        double clientsDeadProbability = default(0.7);
-        double serverDeadProbability = default(0.7); // 0.001
-        double clientsMaxDeathStart = default(6);
-        double clientsMaxDeathDuration = default(20);
-        double serverMaxDeathStart = default(20);
-        double serverMaxDeathDuration = default(20);
-        double leaderDeadProbability = default(0.7);
-        double leaderMaxDeathDuration = default(10);
+        
+        // client crash parameters
+        double clientsCrashProbability = default(0.7);
+        double clientsMaxCrashDelay = default(6);
+        double clientsMaxCrashDuration = default(10);
+        
+        // server crash parameters
+        double serverCrashProbability = default(0.7); // 0.001
+        double serverMaxCrashDelay = default(20);
+        double serverMaxCrashDuration = default(20);
+        
+        double leaderCrashProbability = default(0.7);
+        double leaderMaxCrashDuration = default(10);
         double dieAgainProbability = default(0.7);
-
+        int activationlinkCrashClient = default(0);
+        int activationlinkCrashServer = default(0);
+        
         @display("bgb=896,364");
     types:
-	    channel myChannel extends ned.DelayChannel{
-	        delay = 10ms;
-	    }
+        channel myChannel extends ned.DelayChannel{
+                delay = 10ms;
+        }
     submodules:
         client[numClient]: Client {
             parameters:
                 @display("i=,cyan;p=320,128");
         }
-
+        
         server[numServer]: Server {
             parameters:
                 @display("i=,bronze;");
         }
+        
+        configurationManager: ConfigurationManager {        		
+        }
+        
         switch: Switch {
-            @display("p=380,200");
+                @display("p=380,200");
         }
     connections:
-		
-		for i=0..numServer-1 {
-            server[i].gateServer++ <--> myChannel <--> switch.gateSwitch++;
+        
+        for i=0..numServer-1 {
+                server[i].gateServer++ <--> myChannel <--> switch.gateSwitch++;
         }
         
         for i=0..numClient-1 {
-            client[i].gateClient++ <--> myChannel <--> switch.gateSwitch++;
+                client[i].gateClient++ <--> myChannel <--> switch.gateSwitch++;
         }
         
+        configurationManager.gateConfigurationManager++ <--> myChannel <--> switch.gateSwitch++;
         
 }
