@@ -4,144 +4,10 @@
  *  Created on: 13 mar 2022
  *      Author: ste_dochio
  */
-#include <stdio.h>
-#include <string.h>
-#include <omnetpp.h>
-#include <algorithm>
-#include "Ping_m.h"
-#include <algorithm>
-#include <list>
-#include <random>
-#include <sstream>
-#include <chrono>
-#include "Ping_m.h"
-#include "LeaderElection_m.h"
-#include "VoteReply_m.h"
-#include "VoteRequest_m.h"
-#include "LogMessage_m.h"
-#include "LogMessageResponse_m.h"
-#include "HeartBeat_m.h"
-#include "HeartBeatResponse_m.h"
-#include "TimeOutNow_m.h"
-
-using namespace omnetpp;
-using std::vector;
-using std::__cxx11::to_string;
-using std::string;
-using std::to_string;
-using std::count;
-
-class Server : public cSimpleModule
-{
-    /*
-     * red = server down;
-     * bronze = server in follower state;
-     * silver = server in candidate state;
-     * gold = server in leader state;
-     */
-public:
-    virtual ~Server();
-private:
-    // AUTOMESSAGES
-    cMessage *electionTimeoutExpired; // autoMessage
-    cMessage *heartBeatsReminder;     // if the leader receive this autoMessage it send a broadcast heartbeat
-    cMessage *failureMsg;             // autoMessage to shut down this server
-    cMessage *recoveryMsg;            // autoMessage to reactivate this server
-    cMessage *applyChangesMsg;
-    cMessage *leaderTransferFailed;
-    cMessage *minElectionTimeoutExpired; // a server starts accepting new vote requests only after a minimum timeout from the last heartbeat reception
-    cMessage *catchUpPhaseCountDown;
-    cMessage *shutDownDeletedServer;
-    cMessage *channelLinkProblem; // when i receive this message i remove/restore some link
-
-    enum stateEnum
-    {
-        FOLLOWER,
-        CANDIDATE,
-        LEADER,
-        NON_VOTING_MEMBER
-    };
-    stateEnum serverState; // Current state (Follower, Leader or Candidate)
-    vector<int> configuration;
-    int numberVotingMembers;
-    int networkAddress;
-    int serverNumber;
-    int numClient;
-    bool acceptVoteRequest;
-
-    /****** STATE MACHINE VARIABLES ******/
-    int var_X;
-    int var_Y;
-
-    /****** Persistent state on all servers: ******/
-    int currentTerm; // Time is divided into terms, and each term begins with an election. After a successful election, a single leader
-    // manages the cluster until the end of the term. Some elections fail, in which case the term ends without choosing a leader.
-    int lastVotedTerm;
-    vector<log_entry> logEntries;
-    client_requests_table requestTable;
-
-    int leaderAddress;          // network address of the leader
-    int numberVoteReceived = 0; // number of vote received by every server
-    bool crashed = false;       // it's a boolean useful to shut down server/client
-    bool leaderTransferPhase = false;
-    bool timeOutNowSent = false;
-    double serverCrashProbability;
-    double maxCrashDelay;
-    double maxDeathDuration;
-    int activationCrashLink;
-    cModule *Switch, *serverToDelete;
-    cGate *newServerPortIN, *newServerPortOUT;
-    cGate *newSwitchPortIN, *newSwitchPortOUT;
-    cModule *tempClient;
-    const int NO_CLIENT = -1;
-
-    /****** Volatile state on all servers: ******/
-    int commitIndex = -1; // index of highest log entry known to be committed (initialized to 0, increases monotonically)
-    int lastApplied = -1; // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
-
-    /****** Volatile state on leaders (Reinitialized after election) ******/
-    vector<int> nextIndex;  // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
-    vector<int> matchIndex; // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
-
-    /****** Catching up phase ******/
-    bool catchUpPhaseRunning = false;
-    int newServerAddress; // server to catch up
-    int catchUpRound;
-    int maxNumberRound;
-
-protected:
-    // TXC15 E TXC16 SERVONO INVECE A FINI STATISTICI, GUARDARE QUESTI DUE ESEMPI PER CAPIRE
-    // COME COLLEZIONARE DATI DURANTE LA LIVE SIMULATION
-
-    virtual void initialize() override;
-    virtual void handleMessage(cMessage *msg) override;
-    virtual void sendResponseToClient(int clientAddress, int serialNumber, bool succeded, bool redirect);
-    virtual void updateState(log_entry log);
-    virtual void acceptLog(int leaderAddress, int matchIndex);
-    virtual void startAcceptVoteRequestCountdown();
-    virtual void rejectLog(int leaderAddress);
-    virtual void tryLeaderTransfer(int targetAddress);
-    virtual void restartCountdown();
-    virtual int min(int a, int b);
-    virtual void initializeConfiguration();
-    virtual void deleteServer();
-    virtual void createServer();
-    virtual void refreshDisplay() const override;
-    virtual void finish() override;
-    virtual void scheduleNextCrash();
-    virtual void stepdown(int newCurrentTerm);
-    virtual void updateCommitIndexOnLeader();
-    virtual int countGreaterOrEqual(int threshold);
-    virtual void initializeRequestTable(int size);
-    virtual last_req* getLastRequest(int clientAddr);
-    virtual last_req* addNewRequestEntry(int clientAddr);
-    virtual bool needsToBeProcessed(int serialNumber, int clientAddress);
-
-};
-
-Define_Module(Server);
 
 // Destructor
+#include "Server.h"
+
 Server::~Server()
 {
     cancelAndDelete(failureMsg);
@@ -152,15 +18,6 @@ Server::~Server()
     cancelAndDelete(leaderTransferFailed);
     cancelAndDelete(minElectionTimeoutExpired);
     cancelAndDelete(catchUpPhaseCountDown);
-
-    /*
-  for (int i = 0; i < appendEntryTimers.size() ; i++){
-    cancelAndDelete(appendEntryTimers[i].timeoutEvent);
-  }
-  for (int i = 0; i < installSnapshotTimers.size() ; i++){
-    cancelAndDelete(installSnapshotTimers[i].timeoutEvent);
-  }
-     */
 }
 
 void Server::initialize()
@@ -182,7 +39,6 @@ void Server::initialize()
     maxCrashDelay = getParentModule()->par("serverMaxCrashDelay");
     maxDeathDuration = getParentModule()->par("serverMaxCrashDuration");
     currentTerm = 1; // or 1
-    // alreadyVoted = false;
     lastVotedTerm = 0;
     serverState = FOLLOWER;
     cDisplayString &dispStr = getDisplayString();
@@ -192,11 +48,10 @@ void Server::initialize()
     leaderAddress = -1;
     networkAddress = gate("gateServer$i", 0)->getPreviousGate()->getIndex();
     serverNumber = networkAddress;
-    Switch = gate("gateServer$i", 0)->getPreviousGate()->getOwnerModule();
     var_X = 1;
     var_Y = 1;
-    initializeConfiguration();
     initializeRequestTable(4);
+    initializeConfiguration();
     numberVotingMembers = configuration.size();
 
     for (int i = 0; i < configuration.size(); ++i)
@@ -217,6 +72,7 @@ void Server::initialize()
     }
     minElectionTimeoutExpired = new cMessage("MinElectionTimeoutExpired");
     // here expires the first timeout; so the first server with timeout expired sends the first leader election message
+
     electionTimeoutExpired = new cMessage("ElectionTimeoutExpired");
     double randomTimeout = uniform(0.50, 1);
     scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
@@ -224,7 +80,6 @@ void Server::initialize()
     applyChangesMsg = new cMessage("ApplyChangesToFiniteStateMachine");
     scheduleAt(simTime() + 1, applyChangesMsg);
 
-    shutDownDeletedServer = new cMessage("shutDown");
     activationCrashLink = getParentModule()->par("activationlinkCrashServer");
     if (activationCrashLink == 1){
         channelLinkProblem = new cMessage("channel connection problem begins");
@@ -246,7 +101,8 @@ void Server::handleMessage(cMessage *msg)
 
     // ############################################### RECOVERY BEHAVIOUR ###############################################
 
-    if(msg == failureMsg){
+    if(msg == failureMsg)
+    {
         bubble("i'm dead");
         cDisplayString &dispStr = getDisplayString();
         dispStr.parse("i=device/server2,red");
@@ -258,28 +114,29 @@ void Server::handleMessage(cMessage *msg)
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }
 
-    if (msg == shutDownDeletedServer){
-        //here the server has left the current configuration
-        currentTerm = -1; // or 1
-        // alreadyVoted = true;
-        serverState = FOLLOWER;
-        cDisplayString &dispStr = getDisplayString();
-        dispStr.parse("i=device/server2,blue");
-        numberVoteReceived = 0;
-        acceptVoteRequest = false;
-        leaderAddress = -1;
-        failureMsg = nullptr;
-        minElectionTimeoutExpired = nullptr;
-        recoveryMsg = nullptr;
-        electionTimeoutExpired = nullptr;
-        applyChangesMsg = nullptr;
-        heartBeatsReminder = nullptr;
-        leaderTransferFailed = nullptr;
-        catchUpPhaseCountDown = nullptr;
+    //    if (msg == shutDownDeletedServer)
+    //    {
+    //        //here the server has left the current configuration
+    //        currentTerm = -1; // or 1
+    //        // alreadyVoted = true;
+    //        serverState = FOLLOWER;
+    //        cDisplayString &dispStr = getDisplayString();
+    //        dispStr.parse("i=device/server2,blue");
+    //        numberVoteReceived = 0;
+    //        acceptVoteRequest = false;
+    //        leaderAddress = -1;
+    //        failureMsg = nullptr;
+    //        minElectionTimeoutExpired = nullptr;
+    //        recoveryMsg = nullptr;
+    //        electionTimeoutExpired = nullptr;
+    //        applyChangesMsg = nullptr;
+    //        heartBeatsReminder = nullptr;
+    //        leaderTransferFailed = nullptr;
+    //        catchUpPhaseCountDown = nullptr;
+    //
+    //    }
 
-    }
-
-    else if (msg == recoveryMsg)
+    if (msg == recoveryMsg)
     {
         crashed = false;
         EV << "Here is server[" + to_string(serverNumber) + "]: I am no more dead... \n";
@@ -309,41 +166,7 @@ void Server::handleMessage(cMessage *msg)
     // ################################################ NORMAL BEHAVIOUR ################################################
     else if (crashed == false)
     {
-        if(msg == channelLinkProblem){
-            int decision = intuniform(0,1);//if decision is 1 i restore a random link; if it is 0 i delete a random link
-            int gateINOUT = intuniform(0,1);// if gateINOUT is 1 i delete the in gate; else i delete the out gate
-            if (decision == 0){//here i delete a link
-                if(gateINOUT == 0){// i delete an out gate
-                    if(gate("gateServer$o", 0)->isConnected())
-                        gate("gateServer$o", 0)->disconnect();
-                }else{//i delete the in gate
-                    if(Switch->gate("gateSwitch$o",this->getIndex())->isConnected())
-                        Switch->gate("gateSwitch$o",this->getIndex())->disconnect();
-                }
-            }else{//here i restore a link with the same method of the delete
-                if(gateINOUT == 0){// i restore an out gate
-                    if(!gate("gateServer$o", 0)->isConnected()){
-                        cDelayChannel *delayChannelOUT = cDelayChannel::create("myChannel");
-                        delayChannelOUT->setDelay(0.1);
-
-                        this->gate("gateServer$o", 0)->connectTo(Switch->gate("gateSwitch$i",this->getIndex()), delayChannelOUT);
-                    }
-                }
-                else{ //i restore the in gate
-                    if(!(Switch->gate("gateSwitch$o",this->getIndex())->isConnected())){
-                        cDelayChannel *delayChannelIN = cDelayChannel::create("myChannel");
-                        delayChannelIN->setDelay(0.1);
-
-                        Switch->gate("gateSwitch$o",this->getIndex())->connectTo(this->gate("gateServer$i", 0),delayChannelIN);
-                    }
-                }
-            }
-            channelLinkProblem = new cMessage("another channel connection problem");
-            double randomDelay = uniform(0, 3);
-            scheduleAt(simTime() + randomDelay, channelLinkProblem);
-        }
-
-        else if (msg == electionTimeoutExpired and serverState != LEADER)
+        if (msg == electionTimeoutExpired and serverState != LEADER)
         { // I only enter here if a new election has to be done
             bubble("timeout expired, new election start");
             cDisplayString &dispStr = getDisplayString();
@@ -382,7 +205,7 @@ void Server::handleMessage(cMessage *msg)
         }
 
         // TO DO: non voting members
-        else if (voteRequest != nullptr && (acceptVoteRequest or voteRequest->getDisruptLeaderPermission()))
+        else if (voteRequest != nullptr && (acceptVoteRequest or voteRequest->getDisruptLeaderPermission()) && serverState != NON_VOTING_MEMBER)
         {
             int candidateAddress = voteRequest->getCandidateAddress();
             int candidateTerm = voteRequest->getCurrentTerm();
@@ -471,7 +294,7 @@ void Server::handleMessage(cMessage *msg)
                     serverState = LEADER;
                     leaderAddress = networkAddress;
                     numberVoteReceived = 0;
-                    for (int serverIndex = 0; serverIndex < nextIndex.size(); ++serverIndex)
+                    for (int serverIndex = 0; serverIndex < nextIndex.size(); serverIndex++)
                     {
                         nextIndex[serverIndex] = logEntries.size();
                         if (serverIndex != networkAddress)
@@ -896,7 +719,6 @@ bool isGreaterOrEqual (int num) {
 
 // If there exists an N such that N > commitIndex, a majority of matchIndex[i] >= N,
 // and log[N].term == currentTerm: set commitIndex = N
-// TO DO: non voting members
 void Server::updateCommitIndexOnLeader()
 {
     int lastLogEntryIndex = logEntries.size() - 1;
@@ -1028,74 +850,6 @@ std::ostream& operator<<(std::ostream& stream, const vector<log_entry> logEntrie
     return stream;
 }
 
-void Server::deleteServer()
-{
-    int serverIndex;
-    int gatesize = Switch->gateSize("gateSwitch$o");
-    for (int i = 0; i < gatesize; i++)
-    {
-        // There is only one server to delete and disconnect port from the switch
-        serverIndex = Switch->gate("gateSwitch$o", i)->getIndex();
-        if (networkAddress == serverIndex)
-        {
-            serverToDelete = Switch->gate("gateSwitch$o", i)->getNextGate()->getOwnerModule();
-            serverToDelete->gate("gateServer$o", 0)->disconnect();
-            Switch->gate("gateSwitch$o", i)->disconnect();
-            // Delete the Server
-            serverToDelete->callFinish();
-            scheduleAt(simTime(), shutDownDeletedServer);
-            //serverToDelete->deleteModule();
-        }
-    }
-}
-
-void Server::createServer()
-{
-    Switch->setGateSize("gateSwitch", Switch->gateSize("gateSwitch$o") + 1);
-    //this loop is useful to order the switch vector: all server at the beginning, all client at the end
-    for(int i = numClient + numberVotingMembers; i  >numberVotingMembers ; i--){
-        if(Switch->gate("gateSwitch$o", i - 1)->getNextGate() == nullptr){//doesn't exit the link from switch to client, so i create it
-
-        }
-        tempClient = Switch->gate("gateSwitch$o", i - 1)->getNextGate()->getOwnerModule();//this is the client with the highest index
-        Switch->gate("gateSwitch$o", i - 1)->disconnect();
-        if(tempClient->gate("gateClient$o", 0)->isConnected())
-            tempClient->gate("gateClient$o", 0)->disconnect();
-
-        cDelayChannel *delayChannelINclient = cDelayChannel::create("myChannel");
-        cDelayChannel *delayChannelOUTclient = cDelayChannel::create("myChannel");
-        delayChannelINclient->setDelay(0.1);
-        delayChannelOUTclient->setDelay(0.1);
-        tempClient->gate("gateClient$o", 0)->connectTo(Switch->gate("gateSwitch$i", i), delayChannelOUTclient);
-        Switch->gate("gateSwitch$o",i)->connectTo(tempClient->gate("gateClient$i", 0),delayChannelINclient);
-    }
-    int index = gate("gateServer$o",0)->getNextGate()->size() - 1 - numClient;
-    newSwitchPortIN = Switch->gate("gateSwitch$i", index);
-    newSwitchPortOUT = Switch->gate("gateSwitch$o", index);
-    bubble("Adding new server!");
-    cModuleType *moduleType = cModuleType::get("Server");
-    string i = to_string(index);
-    string temp = "server[" + i + "]";
-    const char *name = temp.c_str();
-    cModule *module = moduleType->create(name, getSystemModule());
-
-    cDelayChannel *delayChannelIN = cDelayChannel::create("myChannel");
-    cDelayChannel *delayChannelOUT = cDelayChannel::create("myChannel");
-    delayChannelIN->setDelay(0.1);
-    delayChannelOUT->setDelay(0.1);
-
-    module->setGateSize("gateServer", module->gateSize("gateServer$o") + 1);
-
-    newServerPortIN = module->gate("gateServer$i",0);
-    newServerPortOUT = module->gate("gateServer$o",0);
-
-    newSwitchPortOUT->connectTo(newServerPortIN, delayChannelIN);
-    newServerPortOUT->connectTo(newSwitchPortIN, delayChannelOUT);
-
-    // create internals, and schedule it
-    module->buildInside();
-    module->callInitialize();
-}
 
 void Server::stepdown(int newCurrentTerm)
 {
@@ -1185,6 +939,18 @@ void Server::refreshDisplay() const {
     strcpy(cstr, logEntriesFormat.c_str());
     sprintf(buf, cstr, currentTerm, commitIndex, lastApplied, var_X, var_Y);
     getDisplayString().setTagArg("t", 0, buf);
+}
+
+void Server::configureServer(int serverNum, vector<int> initialConfiguration)
+{
+    serverNumber = serverNum;
+    configuration = initialConfiguration;
+    serverState= NON_VOTING_MEMBER;
+    for (int i = 0; i < configuration.size(); ++i)
+    {
+        nextIndex.push_back(0);
+        matchIndex.push_back(-1);
+    }
 }
 
 void Server::finish()
