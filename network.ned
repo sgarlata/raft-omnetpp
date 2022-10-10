@@ -36,6 +36,7 @@ simple Switch
 {
     parameters:
         @display("i=device/switch");
+        double channelsReliability = default(0.9);
     gates:
         inout gateSwitch[];
 }
