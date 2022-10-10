@@ -28,15 +28,25 @@ simple Server
 {
     parameters:
         @display("i=device/server2");
+ 		bool addedByManager = default(false);
     gates:
         inout gateServer[];
 }
+
+//this module represent the the entity that manages configuration changes
+simple ConfigurationManager
+{
+    parameters:
+        @display("i=abstract/penguin_l");
+    gates:
+        inout gateConfigurationManager[];
+}
+
 
 simple Switch
 {
     parameters:
         @display("i=device/switch");
-        double channelsReliability = default(0.9);
     gates:
         inout gateSwitch[];
 }
@@ -81,6 +91,9 @@ network Network
                 @display("i=,bronze;");
         }
         
+        configurationManager: ConfigurationManager {        		
+        }
+        
         switch: Switch {
                 @display("p=380,200");
         }
@@ -93,5 +106,7 @@ network Network
         for i=0..numClient-1 {
                 client[i].gateClient++ <--> myChannel <--> switch.gateSwitch++;
         }
+        
+        configurationManager.gateConfigurationManager++ <--> myChannel <--> switch.gateSwitch++;
         
 }
