@@ -8,7 +8,6 @@
 #include <string.h>
 #include "Server.h"
 #include <omnetpp.h>
-#include "Ping_m.h"
 #include <algorithm>
 #include <list>
 #include <random>
@@ -30,23 +29,32 @@ private:
 
     int numberOfServers;
     int numberOfClients;
+    int newServerNumber;
+    int serverToDelete;
 
     cMessage *failureMsg;
     cMessage *recoveryMsg;
-    cMessage *sendConfigurationChange;
     cMessage *reqTimeoutExpired;       // autoMessage to check whether the last request was acknowledged or not
     cMessage *tryAgainMsg;
     cMessage *shutDownDeletedServer;
+    cMessage *timeToChange;
+    cMessage *deleteServerMsg;
+
+    Server *removedServer = nullptr;
 
     int leaderAddress;
     int randomIndex; // Random index for the leader within the client's configuration vector
     int networkAddress;
+    int numberAddedServer;
+    int commandCounter;
     vector<int> initialConfiguration; // new servers are initialized with this configuration
     vector<int> currentConfiguration;
+    vector<int> outOfConfigurationServers;
 
     bool free = true; // True if the last request was acknowledged by the leader
 
     LogMessage *lastLogMessage = nullptr;
+    LogMessage *notifyLeaderOfChangeConfig = nullptr;
 
     cModule *Switch;
     double crashProbability;
@@ -56,10 +64,13 @@ protected:
     virtual void initialize() override;
     virtual void handleMessage(cMessage *msg) override;
     virtual void finish() override;
-    virtual void changeConfiguration();
+    //virtual void changeConfiguration();
     virtual vector<int> initializeConfiguration();
-    virtual void addNewServer();
+    //virtual vector<int> createNewConfiguration();
+    virtual void scheduleNewMessage(char operation, int serverAddress);
+    virtual int addNewServer();
     virtual void removeServer(int toRemoveAddress);
+    virtual void updateConfiguration();
 
 };
 
@@ -67,6 +78,9 @@ Define_Module(ConfigurationManager);
 
 void ConfigurationManager::initialize()
 {
+    WATCH(newServerNumber);
+    WATCH(serverToDelete);
+    WATCH(crashed);
     crashed = false;
 
     numberOfServers = getParentModule()->par("numServer");
@@ -85,9 +99,17 @@ void ConfigurationManager::initialize()
     crashDelay = getParentModule()->par("clientsMaxCrashDelay");
 
     // here expires the first timeout; so the first server with timeout expired sends the first leader election message
-    sendConfigurationChange = new cMessage("I start to send entries.");
+    /*sendConfigurationChange = new cMessage("I start to send entries.");
     double randomTimeout = uniform(0, 1);
-    scheduleAt(simTime() + randomTimeout, sendConfigurationChange);
+    scheduleAt(simTime() + randomTimeout, sendConfigurationChange);*/
+    commandCounter = 0;
+
+    newServerNumber = intuniform(1,3);
+    serverToDelete = intuniform(1,2);
+    //here start the timer for a change configuration
+    timeToChange = new cMessage("timeToChange");
+    scheduleAt(simTime() + 0.5 , timeToChange);
+    free = true;
 }
 
 // the client send only a number to the leader server that insert this number into the log;
@@ -95,7 +117,6 @@ void ConfigurationManager::initialize()
 void ConfigurationManager::handleMessage(cMessage *msg)
 {
     LogMessageResponse *response = dynamic_cast<LogMessageResponse *>(msg);
-
 
     if (msg == failureMsg)
     {
@@ -120,9 +141,9 @@ void ConfigurationManager::handleMessage(cMessage *msg)
         EV << "Config. Manager: I'm back, let's start working again!\n";
         // here we schedule the next client crash
         // restart sending messages
-        sendConfigurationChange = new cMessage("Sending requests");
+        timeToChange = new cMessage("Sending requests");
         double randomTimeout = uniform(0, 1);
-        scheduleAt(simTime() + randomTimeout, sendConfigurationChange);
+        scheduleAt(simTime() + randomTimeout, timeToChange);
     }
 
     if (crashed)
@@ -132,19 +153,32 @@ void ConfigurationManager::handleMessage(cMessage *msg)
     }
     else
     {
-        if (msg == sendConfigurationChange)
-        {
-            changeConfiguration();
-            // here the timeout has expired; client starts sending logMessage in loop
-//            if (free)
-//            {
-//                changeConfiguration();
-//            }
-//            else
-//            {
-//                tryAgainMsg = new cMessage("Try again.");
-//                scheduleAt(simTime() + 2, tryAgainMsg);
-//            }
+        if (msg == timeToChange){
+            if(free)
+            {
+                //here i create the new configuration
+                if (newServerNumber > 0)
+                {
+                    // 1) Add server procedure
+                    int addedServer = addNewServer();
+                    char operation = '+'; //add
+                    //now i have to update the leader about the new server in the configuration
+                    scheduleNewMessage(operation, addedServer);
+                }
+                else if (newServerNumber == 0 && serverToDelete > 0)
+                {
+                    // 2) Now new servers has been added, so we can purge the ones we want to remove from configuration
+                    int toDelete = intuniform(0, currentConfiguration.size()-1);
+                    bubble("Removing old servers from configuration!");
+                    char operation = '-'; //delete
+                    scheduleNewMessage(operation,  toDelete);
+                }
+            }
+            else
+            {
+                tryAgainMsg = new cMessage("Try again.");
+                scheduleAt(simTime() + 2, tryAgainMsg);
+            }
         }
 
         else if (msg == reqTimeoutExpired && !free)
@@ -154,7 +188,7 @@ void ConfigurationManager::handleMessage(cMessage *msg)
             leaderAddress = currentConfiguration[randomIndex];
             lastLogMessage->setLeaderAddress(leaderAddress);
             LogMessage *newMex = lastLogMessage->dup();
-            if(gate("gateConfigurationManagert$o", 0)->isConnected())
+            if(gate("gateConfigurationManager$o", 0)->isConnected())
                 send(newMex, "gateConfigurationManager$o", 0);
 
             reqTimeoutExpired = new cMessage("Timeout expired.");
@@ -170,17 +204,34 @@ void ConfigurationManager::handleMessage(cMessage *msg)
             scheduleAt(simTime() + 1, reqTimeoutExpired);
         }
 
+        else if (msg == deleteServerMsg)
+        {
+            for(int i = 0; i < outOfConfigurationServers.size(); i++)
+            {
+                removeServer(outOfConfigurationServers[i]);
+            }
+        }
+
         else if (response != nullptr)
         {
             // Request acknowledged
             if (response->getSucceded())
             {
-                sendConfigurationChange = new cMessage("Send new entry.");
+                if(newServerNumber > 0)
+                {
+                    newServerNumber--;
+                }
+                else if(serverToDelete > 0)
+                {
+                    serverToDelete--;
+                }
+                updateConfiguration();
+                deleteServerMsg = new cMessage("Delete server");
+                scheduleAt(simTime() + 0.5, deleteServerMsg);
+                timeToChange = new cMessage("add/delete new server.");
                 free = true;
                 cancelEvent(reqTimeoutExpired);
-
-                double randomTimeout = uniform(0, 1);
-                scheduleAt(simTime() + randomTimeout, sendConfigurationChange);
+                scheduleAt(simTime(), timeToChange);
             }
             else
             {
@@ -207,7 +258,6 @@ void ConfigurationManager::handleMessage(cMessage *msg)
                 }
             }
         }
-
     }
 }
 
@@ -231,34 +281,15 @@ vector<int> ConfigurationManager::initializeConfiguration()
             }
         }
     }
-
     return configuration;
 }
 
-void ConfigurationManager::changeConfiguration()
-{
-
-//    int choice = intuniform(0,1);
-//    if(choice > 0)
-//    {
-        addNewServer();
-//    }
-//    else
-//    {
-//        choice = intuniform(0, currentConfiguration.size() - 1);
-//
-//        choice = currentConfiguration[choice];
-//        removeServer(choice);
-//    }
-}
-
-void ConfigurationManager::addNewServer()
+int ConfigurationManager::addNewServer()
 {
     cModule *Switch = gate("gateConfigurationManager$i", 0)->getPreviousGate()->getOwnerModule();
     cGate *newServerPortIN, *newServerPortOUT;
     cGate *newSwitchPortIN, *newSwitchPortOUT;
     cModule *tempClient;
-    int nextServerIndex = numberOfServers;
     numberOfServers++;
 
     Switch->setGateSize("gateSwitch", Switch->gateSize("gateSwitch$o") + 1);
@@ -269,7 +300,7 @@ void ConfigurationManager::addNewServer()
 
     bubble("Adding new server!");
     cModuleType *moduleType = cModuleType::get("Server");
-    string i = to_string(numberOfServers);
+    string i = to_string(numberOfServers-1);
 
     string temp = "server[" + i + "]";
     const char *name = temp.c_str();
@@ -277,8 +308,8 @@ void ConfigurationManager::addNewServer()
 
     cDelayChannel *delayChannelIN = cDelayChannel::create("myChannel");
     cDelayChannel *delayChannelOUT = cDelayChannel::create("myChannel");
-    delayChannelIN->setDelay(0.1);
-    delayChannelOUT->setDelay(0.1);
+    delayChannelIN->setDelay(0.01);
+    delayChannelOUT->setDelay(0.01);
 
     module->setGateSize("gateServer", module->gateSize("gateServer$o") + 1);
 
@@ -292,8 +323,8 @@ void ConfigurationManager::addNewServer()
     module->buildInside();
     module->callInitialize();
 
-    ((Server *)module)->configureServer(nextServerIndex, initialConfiguration);
-
+    ((Server *)module)->configureServer(initialConfiguration);
+    return ((Server*)module)->getAddress();
 }
 
 void ConfigurationManager::removeServer(int toDelete)
@@ -307,54 +338,68 @@ void ConfigurationManager::removeServer(int toDelete)
     {
         // There is only one server to delete and disconnect port from the switch
         serverIndex = Switch->gate("gateSwitch$o", i)->getIndex();
-        if (networkAddress == serverIndex)
+        if (toDelete == serverIndex)
         {
             serverToDelete = Switch->gate("gateSwitch$o", i)->getNextGate()->getOwnerModule();
             serverToDelete->gate("gateServer$o", 0)->disconnect();
             Switch->gate("gateSwitch$o", i)->disconnect();
             // Delete the Server
-            serverToDelete->callFinish();
-            scheduleAt(simTime(), shutDownDeletedServer);
+            // serverToDelete->callFinish();
+            // shutDownDeletedServer = new cMessage("SHUTDOWN SERVER");
+            // scheduleAt(simTime(), shutDownDeletedServer);
         }
+    }
+}
+
+// It sends a log message, under the assumption that the client already knows a leader
+void ConfigurationManager::scheduleNewMessage(char operation, int serverAddr)
+{
+    bubble("Sending change configuration info");
+    commandCounter++;
+    //DA INSERIRE QUI I VARI ADDRESS DEL LogMsg
+    notifyLeaderOfChangeConfig = new LogMessage("change configuration notify");
+    notifyLeaderOfChangeConfig->setClientAddress(networkAddress);
+    notifyLeaderOfChangeConfig->setLeaderAddress(leaderAddress);
+    notifyLeaderOfChangeConfig->setOperation(operation);
+    notifyLeaderOfChangeConfig->setOperandValue(0);
+    notifyLeaderOfChangeConfig->setOperandName('Q');
+    notifyLeaderOfChangeConfig->setSerialNumber(commandCounter);
+    if(operation == '+')
+    {
+        notifyLeaderOfChangeConfig->setServerToAdd(serverAddr);
+        notifyLeaderOfChangeConfig->setOperandValue(serverAddr - numberOfClients - 1);
+    }
+    else
+    {
+        notifyLeaderOfChangeConfig->setServerToRemove(serverAddr);
+        notifyLeaderOfChangeConfig->setOperandValue(serverAddr);
+    }
+    lastLogMessage = notifyLeaderOfChangeConfig->dup();
+
+    if(gate("gateConfigurationManager$o", 0)->isConnected())
+        send(notifyLeaderOfChangeConfig, "gateConfigurationManager$o", 0);
+    free = false;
+
+    reqTimeoutExpired = new cMessage("Start countdown for my request.");
+    scheduleAt(simTime() + 1, reqTimeoutExpired);
+}
+
+void ConfigurationManager::updateConfiguration()
+{
+    if (lastLogMessage->getServerToAdd() >= 0)
+    {
+        // CASE A: new server added to the configuration
+        currentConfiguration.push_back(lastLogMessage->getServerToAdd());
+    }
+    else
+    {
+        // CASE B: server removed from the configuration
+        int toDel = lastLogMessage->getServerToRemove();
+        currentConfiguration.erase(remove(currentConfiguration.begin(), currentConfiguration.end(), toDel));
+        outOfConfigurationServers.push_back(toDel);
     }
 }
 
 void ConfigurationManager::finish()
 {
 }
-
-// ########## CODE FOR CHANNEL LINK CUT ############################################################################
-
-//if(msg == channelLinkProblem){
-//    int decision = intuniform(0,1);//if decision is 1 i restore a random link; if it is 0 i delete a random link
-//    int gateINOUT = intuniform(0,1);// if gateINOUT is 1 i delete the in gate; else i delete the out gate
-//    if (decision == 0){//here i delete a link
-//        if(gateINOUT == 0){// i delete an out gate
-//            if(gate("gateServer$o", 0)->isConnected())
-//                gate("gateServer$o", 0)->disconnect();
-//        }else{//i delete the in gate
-//            if(Switch->gate("gateSwitch$o",this->getIndex())->isConnected())
-//                Switch->gate("gateSwitch$o",this->getIndex())->disconnect();
-//        }
-//    }else{//here i restore a link with the same method of the delete
-//        if(gateINOUT == 0){// i restore an out gate
-//            if(!gate("gateServer$o", 0)->isConnected()){
-//                cDelayChannel *delayChannelOUT = cDelayChannel::create("myChannel");
-//                delayChannelOUT->setDelay(0.1);
-//
-//                this->gate("gateServer$o", 0)->connectTo(Switch->gate("gateSwitch$i",this->getIndex()), delayChannelOUT);
-//            }
-//        }
-//        else{ //i restore the in gate
-//            if(!(Switch->gate("gateSwitch$o",this->getIndex())->isConnected())){
-//                cDelayChannel *delayChannelIN = cDelayChannel::create("myChannel");
-//                delayChannelIN->setDelay(0.1);
-//
-//                Switch->gate("gateSwitch$o",this->getIndex())->connectTo(this->gate("gateServer$i", 0),delayChannelIN);
-//            }
-//        }
-//    }
-//    channelLinkProblem = new cMessage("another channel connection problem");
-//    double randomDelay = uniform(0, 3);
-//    scheduleAt(simTime() + randomDelay, channelLinkProblem);
-//}

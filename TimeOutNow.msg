@@ -1,5 +1,7 @@
 // force new election
 message TimeOutNow {
-    int leaderAddress;
     int destAddress;
+    int clientAddress;
+    int serverToRemove; 	// n == remove server n
+    int serialNumber;
 }

@@ -4,8 +4,10 @@
 message LogMessage {
     int clientAddress;
     char operandName;
-    int operandValue;
-    char operation; // s == set, a == add, m == mul
+    int operandValue;			// if serverToAdd >= 0, then it contains the serverNumber of the server to add
+    char operation; 			// s == set, a == add, m == mul
+    int serverToRemove = -1; 	// n == remove server n
+    int serverToAdd = -1;		// n == add server n
     int serialNumber;
     int leaderAddress;
 };

@@ -14,7 +14,6 @@
 #include <sstream>
 #include <chrono>
 #include "Ping_m.h"
-#include "LeaderElection_m.h"
 #include "VoteReply_m.h"
 #include "VoteRequest_m.h"
 #include "LogMessage_m.h"
@@ -53,6 +52,7 @@ void Switch::handleMessage(cMessage *msg)
     LogMessage *logMessage = dynamic_cast<LogMessage *>(msg);
     LogMessageResponse *logMessageResponse = dynamic_cast<LogMessageResponse *>(msg);
     TimeOutNow *timeout = dynamic_cast<TimeOutNow *>(msg);
+
     double reliability = par("channelsReliability");
     bool switchIsFaulty = false;
     if (uniform(0,1) > reliability)
@@ -62,6 +62,7 @@ void Switch::handleMessage(cMessage *msg)
     if (switchIsFaulty)
     {
         bubble("A packet is lost!");
+        EV << "Lost message" + std::to_string(msg->getId());
     }
 
     // PACKET IS CORRECTLY FORWARDED
@@ -128,4 +129,5 @@ void Switch::handleMessage(cMessage *msg)
         LogMessageResponse *responseForward = logMessageResponse->dup();
         send(responseForward, "gateSwitch$o", dest);
     }
+
 }

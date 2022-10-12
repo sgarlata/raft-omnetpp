@@ -29,6 +29,12 @@ simple Server
     parameters:
         @display("i=device/server2");
  		bool addedByManager = default(false);
+ 		int catchUpPhaseRoundDuration = default(2);
+ 		int maxNumberRound = default(5);
+ 		int minElectionTimeout = default(2);
+ 		int maxElectionTimeout = default(4);
+ 		int applyChangePeriod = default(2);
+ 		double heartbeatsPeriod = default(0.3);
     gates:
         inout gateServer[];
 }
@@ -47,6 +53,7 @@ simple Switch
 {
     parameters:
         @display("i=device/switch");
+        double channelsReliability = default(0.9);
     gates:
         inout gateSwitch[];
 }
