@@ -7,13 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <omnetpp.h>
-#include "Ping_m.h"
-#include <algorithm>
-#include <list>
 #include <random>
-#include <sstream>
-#include <chrono>
-#include "Ping_m.h"
 #include "VoteReply_m.h"
 #include "VoteRequest_m.h"
 #include "LogMessage_m.h"
