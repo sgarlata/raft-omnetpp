@@ -169,7 +169,7 @@ void ConfigurationManager::handleMessage(cMessage *msg)
                 {
                     // 2) Now new servers has been added, so we can purge the ones we want to remove from configuration
                     int toDelete = intuniform(0, currentConfiguration.size()-1);
-                    bubble("Removing old servers from configuration!");
+                    bubble("Removing servers from configuration!");
                     char operation = '-'; //delete
                     scheduleNewMessage(operation,  toDelete);
                 }
@@ -206,6 +206,7 @@ void ConfigurationManager::handleMessage(cMessage *msg)
 
         else if (msg == deleteServerMsg)
         {
+            bubble("Shutting down removed servers...");
             for(int i = 0; i < outOfConfigurationServers.size(); i++)
             {
                 removeServer(outOfConfigurationServers[i]);
@@ -254,7 +255,7 @@ void ConfigurationManager::handleMessage(cMessage *msg)
                     // TELL THE CLIENT TO WAIT FOR COMMIT
                     bubble("Waiting for commit.");
                     tryAgainMsg = new cMessage("Try again.");
-                    scheduleAt(simTime() + 2, tryAgainMsg);
+                    scheduleAt(simTime() + 1.5, tryAgainMsg);
                 }
             }
         }
@@ -371,8 +372,11 @@ void ConfigurationManager::scheduleNewMessage(char operation, int serverAddr)
     }
     else
     {
-        notifyLeaderOfChangeConfig->setServerToRemove(serverAddr);
-        notifyLeaderOfChangeConfig->setOperandValue(serverAddr);
+        //        notifyLeaderOfChangeConfig->setServerToRemove(serverAddr);
+        //        notifyLeaderOfChangeConfig->setOperandValue(serverAddr);
+        notifyLeaderOfChangeConfig->setServerToRemove(leaderAddress);
+        notifyLeaderOfChangeConfig->setOperandValue(leaderAddress);
+
     }
     lastLogMessage = notifyLeaderOfChangeConfig->dup();
 
@@ -395,7 +399,7 @@ void ConfigurationManager::updateConfiguration()
     {
         // CASE B: server removed from the configuration
         int toDel = lastLogMessage->getServerToRemove();
-        currentConfiguration.erase(remove(currentConfiguration.begin(), currentConfiguration.end(), toDel));
+        currentConfiguration.erase(remove(currentConfiguration.begin(), currentConfiguration.end(), toDel), currentConfiguration.end());
         outOfConfigurationServers.push_back(toDel);
     }
 }

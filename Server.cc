@@ -18,6 +18,7 @@ Server::~Server()
     cancelAndDelete(leaderTransferFailed);
     cancelAndDelete(minElectionTimeoutExpired);
     cancelAndDelete(catchUpRoundTimeout);
+    cancelAndDelete(scheduleCrashMsg);
 }
 
 void Server::initialize()
@@ -73,8 +74,12 @@ void Server::initialize()
     }
 
     // INITIALIZE AUTOMESSAGES
+    failureMsg = new cMessage("Failure Msg");
     minElectionTimeoutExpired = new cMessage("MinElectionTimeoutExpired");
     heartBeatsReminder = new cMessage("heartBeatsReminder");
+    recoveryMsg = new cMessage("Recovery Msg");
+    leaderTransferFailed = new cMessage("LeaderTransferFailed");
+    catchUpRoundTimeout = new cMessage("CatchUpRoundTimeout");
 
     electionTimeoutExpired = new cMessage("ElectionTimeoutExpired");
     double randomTimeout = uniform(minElectionTimeout, maxElectionTimeout);
@@ -97,555 +102,603 @@ void Server::handleMessage(cMessage *msg)
     LogMessage *logMessage = dynamic_cast<LogMessage *>(msg);
     TimeOutNow *timeOutnow = dynamic_cast<TimeOutNow *>(msg);
 
-    // ############################################### RECOVERY BEHAVIOUR ###############################################
+    // ############################################### AUTO SHUTDOWN ###############################################
 
-    if(msg == failureMsg)
-    {
-        bubble("CRASHED");
+    if ((!gate("gateServer$o",0)->isConnected()) or (!gate("gateServer$i",0)->isConnected())){
         cDisplayString &dispStr = getDisplayString();
-        dispStr.parse("i=device/server2,red");
-        crashed = true;
-        double randomFailureTime = uniform(5, maxCrashDuration);
-        EV
-        << "\nServer ID: [" + to_string(getIndex(networkAddress)) + "] is dead for about: [" + to_string(randomFailureTime) + "]\n";
-        recoveryMsg = new cMessage("recoveryMsg");
-        scheduleAt(simTime() + randomFailureTime, recoveryMsg);
+        dispStr.parse("i=device/server2,purple");
+        cancelEvent(failureMsg);
+        cancelEvent(recoveryMsg);
+        cancelEvent(electionTimeoutExpired);
+        cancelEvent(heartBeatsReminder);
+        cancelEvent(applyChangesMsg);
+        cancelEvent(leaderTransferFailed);
+        cancelEvent(minElectionTimeoutExpired);
+        cancelEvent(applyChangesMsg);
+        cancelEvent(catchUpRoundTimeout);
+        cancelEvent(scheduleCrashMsg);
+        voteReply = nullptr;
+        voteRequest = nullptr;
+        heartBeat = nullptr;
+        heartBeatResponse = nullptr;
+        logMessage = nullptr;
+        timeOutnow = nullptr;
+        currentTerm = -1;
+        numberVoteReceived = 0;
+        serverState = FOLLOWER;
+        char buf[10];
+        string logEntriesFormat = "";
+        logEntriesFormat = logEntriesFormat + "currentTerm: %ld\n commitIndex: %ld\n  X==%ld; Y==%ld";
+        char * cstr = new char [logEntriesFormat.length() + 1];
+        strcpy(cstr, logEntriesFormat.c_str());
+        sprintf(buf, cstr, currentTerm, commitIndex, var_X, var_Y);
+        getDisplayString().setTagArg("t", 0, buf);
     }
-
-    if (msg == recoveryMsg)
+    else
     {
-        crashed = false;
-        EV << "Here is server[" + to_string(getIndex(networkAddress)) + "]: I am no more dead... \n";
-        bubble("im returned alive");
-        cDisplayString &dispStr = getDisplayString();
+        // ############################################### RECOVERY BEHAVIOUR ###############################################
 
-        // if this server returns alive it has to be a follower because there might be another server serving as the leader
-        if (serverState != NON_VOTING_MEMBER)
+        if(msg == failureMsg)
         {
-            dispStr.parse("i=device/server2,bronze");
-            serverState = FOLLOWER;
-            numberVoteReceived = 0;
-            acceptVoteRequest = true;
-            // restart election count-down
-            electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-            double randomTimeout = uniform(minElectionTimeout, maxElectionTimeout);
-            scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
-            // restart the periodical updates of the FSM
-
-        }
-        else
-        {
-            dispStr.parse("i=device/server2,blue");
-        }
-
-        applyChangesMsg = new cMessage("Apply changes to State Machine");
-        scheduleAt(simTime() + applyChangesPeriod, applyChangesMsg);
-        // Schedule next crashes
-        scheduleCrashMsg = new cMessage("Schedule next crash");
-        scheduleAt(simTime(), scheduleCrashMsg);
-    }
-
-    else if (crashed)
-    {
-        EV << "SERVER CRASHED: cannot react to messages";
-    }
-
-    // ################################################ NORMAL BEHAVIOUR ################################################
-    else if (crashed == false)
-    {
-        ////
-        // ELECTION TIMEOUT IS EXPIRED, START A NEW ELECTION
-        if (msg == electionTimeoutExpired and serverState != LEADER and serverState != NON_VOTING_MEMBER)
-        {
-            // New election needed
-            bubble("timeout expired, new election start");
+            bubble("CRASHED");
+            cancelEvent(failureMsg);
+            cancelEvent(recoveryMsg);
+            cancelEvent(electionTimeoutExpired);
+            cancelEvent(heartBeatsReminder);
+            cancelEvent(applyChangesMsg);
+            cancelEvent(leaderTransferFailed);
+            cancelEvent(minElectionTimeoutExpired);
+            cancelEvent(catchUpRoundTimeout);
             cDisplayString &dispStr = getDisplayString();
-            dispStr.parse("i=device/server2,silver");
-            numberVoteReceived = 0;
-            currentTerm++;
-            serverState = CANDIDATE;
-            numberVoteReceived++;      // it goes to 1, the server vote for himself
-            // this->alreadyVoted = true; // each server can vote just one time per election; if the server is in a candidate state it vote for himself
-            lastVotedTerm = currentTerm;
-            // i set a new timeout range
-            electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-            double randomTimeout = uniform(0.75, 1.25);
-            scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+            dispStr.parse("i=device/server2,red");
+            crashed = true;
+            double randomFailureTime = uniform(0.5, maxCrashDuration);
+            EV
+            << "\nServer ID: [" + to_string(getIndex(networkAddress)) + "] is dead for about: [" + to_string(randomFailureTime) + "]\n";
+            recoveryMsg = new cMessage("recoveryMsg");
+            scheduleAt(simTime() + randomFailureTime, recoveryMsg);
+        }
 
-            // send broadcast vote request to the switch
-            VoteRequest *voteRequest = new VoteRequest("voteRequest");
-            voteRequest->setCandidateAddress(networkAddress);
-            voteRequest->setCurrentTerm(currentTerm);
-            int lastLogIndex = logEntries.size() - 1;
-            voteRequest->setLastLogIndex(lastLogIndex);
-            if (!(lastLogIndex < 0))
+        if (msg == recoveryMsg)
+        {
+            crashed = false;
+            EV << "Here is server[" + to_string(getIndex(networkAddress)) + "]: I am no more dead... \n";
+            bubble("I'm back!");
+            cDisplayString &dispStr = getDisplayString();
+
+            // if this server returns alive it has to be a follower because there might be another server serving as the leader
+            if (serverState != NON_VOTING_MEMBER)
             {
-                voteRequest->setLastLogTerm(logEntries[lastLogIndex].entryTerm);
+                dispStr.parse("i=device/server2,bronze");
+                serverState = FOLLOWER;
+                numberVoteReceived = 0;
+                acceptVoteRequest = true;
+                // restart election count-down
+                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
+                double randomTimeout = uniform(minElectionTimeout, maxElectionTimeout);
+                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+                // restart the periodical updates of the FSM
+
             }
             else
             {
-                voteRequest->setLastLogTerm(0);
+                dispStr.parse("i=device/server2,blue");
             }
-            if(gate("gateServer$o", 0)->isConnected())
-                send(voteRequest, "gateServer$o", 0);
+
+            if (catchUpPhaseRunning or leaderTransferPhase)
+            {
+                catchUpPhaseRunning = false;
+                leaderTransferPhase = false;
+                last_req* lastReqHashEntry = getLastRequest(changingServerEntry.clientAddress);
+                lastReqHashEntry->lastArrivedSerial--;
+            }
+            applyChangesMsg = new cMessage("Apply changes to State Machine");
+            scheduleAt(simTime() + applyChangesPeriod, applyChangesMsg);
+            // Schedule next crashes
+            scheduleCrashMsg = new cMessage("Schedule next crash");
+            scheduleAt(simTime(), scheduleCrashMsg);
         }
 
-        else if (msg == scheduleCrashMsg)
+        else if (crashed)
         {
-            double crashProbabilitySample = uniform(0, 1);
-            if (crashProbabilitySample < serverCrashProbability)
-            {
-                double randomDelay = uniform(1, maxCrashDelay);
-                failureMsg = new cMessage("failureMsg");
-                EV
-                << "Here is server" + to_string(getIndex(networkAddress)) + ": I will crash in " + to_string(randomDelay) + " seconds...\n";
-                scheduleAt(simTime() + randomDelay, failureMsg);
-            }
-            else
-            {
-                scheduleCrashMsg = new cMessage("Schedule next crash");
-                double randomTimeout = uniform(0, maxCrashDelay);
-                scheduleAt(simTime() + randomTimeout, scheduleCrashMsg);
-            }
+            EV << "SERVER CRASHED: cannot react to messages";
         }
 
-        else if (msg == catchUpRoundTimeout)
+        // ################################################ NORMAL BEHAVIOUR ################################################
+        else if (crashed == false)
         {
-            catchUpCountdownEnded = true;
-        }
-
-        ////
-        // VOTE REQUEST RECEIVED
-        else if (voteRequest != nullptr && acceptVoteRequest && serverState != NON_VOTING_MEMBER)
-        {
-            int candidateAddress = voteRequest->getCandidateAddress();
-            int candidateTerm = voteRequest->getCurrentTerm();
-            int candidateLastLogTerm = voteRequest->getLastLogTerm();
-            int candidateLastLogIndex = voteRequest->getLastLogIndex();
-            int thisLastLogIndex = logEntries.size() - 1;
-            int thisLastLogTerm = 0;
-            if (!(thisLastLogIndex < 0)) {
-                thisLastLogTerm = logEntries[thisLastLogIndex].entryTerm;
-            }
-            bool candidateLogUpToDate = true;
-
-            if (candidateTerm > currentTerm)
+            ////
+            // ELECTION TIMEOUT IS EXPIRED, START A NEW ELECTION
+            if (msg == electionTimeoutExpired and serverState != LEADER and serverState != NON_VOTING_MEMBER)
             {
-                // STEPDOWN PROCEDURE
-                stepdown(voteRequest->getCurrentTerm());
-                if (leaderTransferPhase)
+                startNewElection(false);
+            }
+
+            else if (msg == scheduleCrashMsg)
+            {
+                double crashProbabilitySample = uniform(0, 1);
+                if (crashProbabilitySample < serverCrashProbability)
                 {
-                    cancelEvent(leaderTransferFailed);
-                    leaderTransferPhase = false;
-                    timeOutNowSent = false;
+                    double randomDelay = uniform(1, maxCrashDelay);
+                    failureMsg = new cMessage("failureMsg");
+                    EV
+                    << "Here is server" + to_string(getIndex(networkAddress)) + ": I will crash in " + to_string(randomDelay) + " seconds...\n";
+                    scheduleAt(simTime() + randomDelay, failureMsg);
+                }
+                else
+                {
+                    scheduleCrashMsg = new cMessage("Schedule next crash");
+                    double randomTimeout = uniform(0, maxCrashDelay);
+                    scheduleAt(simTime() + randomTimeout, scheduleCrashMsg);
                 }
             }
 
-            if (candidateLastLogTerm < thisLastLogTerm
-                    or (candidateLastLogTerm == thisLastLogTerm and candidateLastLogIndex < thisLastLogIndex))
+            if (msg == catchUpRoundTimeout)
             {
-                candidateLogUpToDate = false;
+                EV << "Ended timeout for round " + to_string(catchUpRoundNumber);
+                catchUpCountdownEnded = true;
             }
 
-            if (candidateTerm == currentTerm && candidateTerm > lastVotedTerm && candidateLogUpToDate)
+            ////
+            // VOTE REQUEST RECEIVED
+            else if (voteRequest != nullptr
+                    &&
+                    (acceptVoteRequest or voteRequest->getDisruptLeaderPermission())
+                    &&
+                    serverState != NON_VOTING_MEMBER)
             {
-                cancelEvent(electionTimeoutExpired);
-                // i can grant up to 1 vote for each term
-                lastVotedTerm = voteRequest->getCurrentTerm();
-                // restart new election count-down
-                electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-                double randomTimeout = uniform(1, 2);
-                scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
-                // send positive vote reply
-                bubble("vote reply: vote granted");
-                VoteReply *voteReply = new VoteReply("voteReply");
-                voteReply->setVoterAddress(networkAddress); // this is the id of the voting server
-                voteReply->setLeaderAddress(candidateAddress);
-                voteReply->setVoteGranted(1);
-                voteReply->setCurrentTerm(currentTerm);
-                if(gate("gateServer$o", 0)->isConnected())
-                    send(voteReply, "gateServer$o", 0);
-            }
-            else
-            {
-                // send negative vote reply
-                bubble("vote reply: NO");
-                VoteReply *voteReply = new VoteReply("voteReply");
-                voteReply->setVoterAddress(networkAddress); // this is the id of the voting server
-                voteReply->setLeaderAddress(candidateAddress);
-                voteReply->setVoteGranted(0);
-                voteReply->setCurrentTerm(currentTerm);
-                if(gate("gateServer$o", 0)->isConnected())
-                    send(voteReply, "gateServer$o", 0);
-            }
-        }
-
-        else if (voteReply != nullptr)
-        { // here i received a vote so i increment the current term vote
-
-            if (voteReply->getCurrentTerm() > currentTerm)
-            {
-                // STEPDOWN PROCEDURE
-                stepdown(voteReply->getCurrentTerm());
-            }
-
-            if (voteReply->getCurrentTerm() == currentTerm && serverState == CANDIDATE)
-            {
-                numberVoteReceived = numberVoteReceived + voteReply->getVoteGranted();
-                if (numberVoteReceived > numberVotingMembers / 2)
+                int candidateAddress = voteRequest->getCandidateAddress();
+                int candidateTerm = voteRequest->getCurrentTerm();
+                int candidateLastLogTerm = voteRequest->getLastLogTerm();
+                int candidateLastLogIndex = voteRequest->getLastLogIndex();
+                int thisLastLogIndex = logEntries.size() - 1;
+                int thisLastLogTerm = 0;
+                if (!(thisLastLogIndex < 0))
                 {
-                    // Majority is reached: i am the NEW LEADER
-                    bubble("i'm the leader");
-                    cDisplayString &dispStr = getDisplayString();
-                    dispStr.parse("i=device/server2,gold");
+                    thisLastLogTerm = logEntries[thisLastLogIndex].entryTerm;
+                }
+                bool candidateLogUpToDate = true;
 
-                    // if a server becomes leader I have to cancel the timer for a new election since it will
-                    // remain leader until the first failure, furthermore i have to reset all state variables, including nextIdex and matchIndex
-                    cancelEvent(electionTimeoutExpired);
-                    serverState = LEADER;
-                    leaderAddress = networkAddress;
-                    numberVoteReceived = 0;
-                    catchUpPhaseRunning = false;
-                    for (int serverIndex = 0; serverIndex < nextIndex.size(); serverIndex++)
+                if (candidateTerm > currentTerm)
+                {
+                    // STEPDOWN PROCEDURE
+                    stepdown(voteRequest->getCurrentTerm());
+                    if (leaderTransferPhase)
                     {
-                        nextIndex[serverIndex] = logEntries.size();
-                        if (serverIndex != networkAddress)
+                        cancelEvent(leaderTransferFailed);
+                        leaderTransferPhase = false;
+                        timeOutNowSent = false;
+                    }
+                }
+
+                if (candidateLastLogTerm < thisLastLogTerm
+                        or (candidateLastLogTerm == thisLastLogTerm and candidateLastLogIndex < thisLastLogIndex))
+                {
+                    candidateLogUpToDate = false;
+                }
+
+                if (candidateTerm == currentTerm && candidateTerm > lastVotedTerm && candidateLogUpToDate)
+                {
+                    cancelEvent(electionTimeoutExpired);
+                    // i can grant up to 1 vote for each term
+                    lastVotedTerm = voteRequest->getCurrentTerm();
+                    // restart new election count-down
+                    electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
+                    double randomTimeout = uniform(1, 2);
+                    scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+                    // send positive vote reply
+                    bubble("vote reply: vote granted");
+                    VoteReply *voteReply = new VoteReply("voteReply");
+                    voteReply->setVoterAddress(networkAddress); // this is the id of the voting server
+                    voteReply->setLeaderAddress(candidateAddress);
+                    voteReply->setVoteGranted(1);
+                    voteReply->setCurrentTerm(currentTerm);
+                    if(gate("gateServer$o", 0)->isConnected())
+                        send(voteReply, "gateServer$o", 0);
+                }
+                else
+                {
+                    // send negative vote reply
+                    bubble("vote reply: NO");
+                    VoteReply *voteReply = new VoteReply("voteReply");
+                    voteReply->setVoterAddress(networkAddress); // this is the id of the voting server
+                    voteReply->setLeaderAddress(candidateAddress);
+                    voteReply->setVoteGranted(0);
+                    voteReply->setCurrentTerm(currentTerm);
+                    if(gate("gateServer$o", 0)->isConnected())
+                        send(voteReply, "gateServer$o", 0);
+                }
+            }
+
+            else if (voteReply != nullptr)
+            { // here i received a vote so i increment the current term vote
+
+                if (voteReply->getCurrentTerm() > currentTerm)
+                {
+                    // STEPDOWN PROCEDURE
+                    stepdown(voteReply->getCurrentTerm());
+                }
+
+                if (voteReply->getCurrentTerm() == currentTerm && serverState == CANDIDATE)
+                {
+                    numberVoteReceived = numberVoteReceived + voteReply->getVoteGranted();
+                    if (numberVoteReceived > numberVotingMembers / 2)
+                    {
+                        // Majority is reached: i am the NEW LEADER
+                        bubble("i'm the leader");
+                        cDisplayString &dispStr = getDisplayString();
+                        dispStr.parse("i=device/server2,gold");
+
+                        // if a server becomes leader I have to cancel the timer for a new election since it will
+                        // remain leader until the first failure, furthermore i have to reset all state variables, including nextIdex and matchIndex
+                        cancelEvent(electionTimeoutExpired);
+                        serverState = LEADER;
+                        leaderAddress = networkAddress;
+                        numberVoteReceived = 0;
+                        catchUpPhaseRunning = false;
+                        for (int serverIndex = 0; serverIndex < nextIndex.size(); serverIndex++)
                         {
-                            matchIndex[serverIndex] = -1;
+                            nextIndex[serverIndex] = logEntries.size();
+                            if (serverIndex != networkAddress)
+                            {
+                                matchIndex[serverIndex] = -1;
+                            }
+                            else
+                            {
+                                matchIndex[serverIndex] = logEntries.size() - 1;
+                            }
+                        }
+
+                        if(!leaderTransferPhase)
+                        {
+                            // add NOP to log
+                            log_entry NOP;
+                            NOP.clientAddress = NO_CLIENT;
+                            NOP.entryTerm = currentTerm;
+                            NOP.operandName = 'X';
+                            NOP.operandValue = 0;
+                            NOP.operation = 'A';
+                            NOP.entryLogIndex = logEntries.size();
+                            // update next index and match index for leader.
+                            nextIndex[getIndex(networkAddress)]++;
+                            matchIndex[getIndex(networkAddress)]++;
+                            logEntries.push_back(NOP);
+                            // periodical HeartBeat
+
                         }
                         else
                         {
-                            matchIndex[serverIndex] = logEntries.size() - 1;
+                            log_entry REMOVE;
+                            REMOVE.clientAddress = changingServerEntry.clientAddress;
+                            REMOVE.entryTerm = currentTerm;
+                            REMOVE.entryLogIndex = logEntries.size();
+                            REMOVE.addressServerToRemove = changingServerEntry.addressServerToRemove;
+                            // update next index and match index for leader.
+                            nextIndex[getIndex(networkAddress)]++;
+                            matchIndex[getIndex(networkAddress)]++;
+                            logEntries.push_back(REMOVE);
+                            int toRemove = REMOVE.addressServerToRemove;
+                            configuration.erase(remove(configuration.begin(), configuration.end(), toRemove));
                         }
+                        heartBeatsReminder = new cMessage("heartBeatsReminder");
+                        scheduleAt(simTime(), heartBeatsReminder);
                     }
+                }
+                leaderTransferPhase = false;
+            }
 
-                    if(!leaderTransferPhase)
+            ////
+            // HEARTBEAT RECEIVED (AppendEntries RPC)
+            if (heartBeat != nullptr)
+            {
+                int logSize = logEntries.size();
+                int lastLogIndex = logSize - 1;
+                int term = heartBeat->getLeaderCurrentTerm();
+                int prevLogIndex = heartBeat->getPrevLogIndex();
+                int prevLogTerm = heartBeat->getPrevLogTerm();
+                int leaderCommit = heartBeat->getLeaderCommit();
+                int clientAddr = heartBeat->getEntry().clientAddress;
+                bool condition2Satisfied = true;
+                last_req* lastRequestFromClient;
+
+                if (serverState == NON_VOTING_MEMBER && heartBeat->getEmpty())
+                {
+                    catchUpTargetIndex = heartBeat->getLeaderCommit();
+                }
+
+                /* ****************
+                 * LOG IS REFUSED *
+                 ******************/
+                // ALL SERVERS: If RPC request or response contains term > currentTerm: set currentTerm = term, convert to follower
+                if (term < currentTerm)
+                {
+                    // @ensure LOG MATCHING PROPERTY
+                    // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
+                    rejectLog(leaderAddress);
+                }
+                else
+                {
+                    // CONDITION (1) satisfied
+                    currentTerm = term;
+                    if(serverState != NON_VOTING_MEMBER)
                     {
-                        // add NOP to log
-                        log_entry NOP;
-                        NOP.clientAddress = NO_CLIENT;
-                        NOP.entryTerm = currentTerm;
-                        NOP.operandName = 'X';
-                        NOP.operandValue = 0;
-                        NOP.operation = 'A';
-                        NOP.entryLogIndex = logEntries.size();
-                        // update next index and match index for leader.
-                        nextIndex[getIndex(networkAddress)]++;
-                        matchIndex[getIndex(networkAddress)]++;
-                        logEntries.push_back(NOP);
-                        // periodical HeartBeat
-
+                        cDisplayString &dispStr = getDisplayString();
+                        dispStr.parse("i=device/server2, bronze");
+                        serverState = FOLLOWER;
                     }
-                    else
-                    {
-                        log_entry REMOVE;
-                        REMOVE.clientAddress = changingServerEntry.clientAddress;
-                        REMOVE.entryTerm = currentTerm;
-                        REMOVE.entryLogIndex = logEntries.size();
-                        REMOVE.addressServerToRemove = changingServerEntry.addressServerToRemove;
-                        // update next index and match index for leader.
-                        nextIndex[getIndex(networkAddress)]++;
-                        matchIndex[getIndex(networkAddress)]++;
-                        logEntries.push_back(REMOVE);
-                        int toRemove = REMOVE.addressServerToRemove;
-                        configuration.erase(remove(configuration.begin(), configuration.end(), toRemove));
-                    }
-                    heartBeatsReminder = new cMessage("heartBeatsReminder");
-                    scheduleAt(simTime(), heartBeatsReminder);
-                }
-            }
-            leaderTransferPhase = false;
-        }
-
-        ////
-        // HEARTBEAT RECEIVED (AppendEntries RPC)
-        if (heartBeat != nullptr)
-        {
-            int logSize = logEntries.size();
-            int lastLogIndex = logSize - 1;
-            int term = heartBeat->getLeaderCurrentTerm();
-            int prevLogIndex = heartBeat->getPrevLogIndex();
-            int prevLogTerm = heartBeat->getPrevLogTerm();
-            int leaderCommit = heartBeat->getLeaderCommit();
-            int clientAddr = heartBeat->getEntry().clientAddress;
-            bool condition2Satisfied = true;
-            last_req* lastRequestFromClient;
-
-            // A non voting member saves the commit index of the first message sent by the leader
-            if (serverState == NON_VOTING_MEMBER && heartBeat->getEmpty())
-            {
-                catchUpTargetIndex = heartBeat->getLeaderCommit();
-            }
-
-            /* ****************
-             * LOG IS REFUSED *
-             ******************/
-            // ALL SERVERS: If RPC request or response contains term > currentTerm: set currentTerm = term, convert to follower
-            if (term < currentTerm)
-            {
-                // @ensure LOG MATCHING PROPERTY
-                // CONSISTENCY CHECK: (1) Reply false if term < currentTerm
-                rejectLog(leaderAddress);
-            }
-            else
-            {
-                // CONDITION (1) satisfied
-                currentTerm = term;
-                if(serverState != NON_VOTING_MEMBER)
-                {
-                    cDisplayString &dispStr = getDisplayString();
-                    dispStr.parse("i=device/server2, bronze");
-                    serverState = FOLLOWER;
-                }
-                numberVoteReceived = 0;
-                // alreadyVoted = false;
-                leaderAddress = heartBeat->getLeaderAddress();
-                // (2) Reply false if log doesn't contain an entry at prevLogIndex...
-                // whose term matches prevLogTerm
-                // (2.a) Log is too short
-                if (prevLogIndex > lastLogIndex)
-                {
-                    condition2Satisfied = false;
-                }
-                // (2.b) no entry at prevLogIndex whose term matches prevLogTerm
-                if (logSize > 0 and prevLogIndex >= 0)
-                {
-                    // if logEntries is empty (size == 0) or prevLogTerm == -1 there is no need to deny
-                    if (logEntries[prevLogIndex].entryTerm != prevLogTerm)
+                    numberVoteReceived = 0;
+                    // alreadyVoted = false;
+                    leaderAddress = heartBeat->getLeaderAddress();
+                    // (2) Reply false if log doesn't contain an entry at prevLogIndex...
+                    // whose term matches prevLogTerm
+                    // (2.a) Log is too short
+                    if (prevLogIndex > lastLogIndex)
                     {
                         condition2Satisfied = false;
                     }
+                    // (2.b) no entry at prevLogIndex whose term matches prevLogTerm
+                    if (logSize > 0 and prevLogIndex >= 0)
+                    {
+                        // if logEntries is empty (size == 0) or prevLogTerm == -1 there is no need to deny
+                        if (logEntries[prevLogIndex].entryTerm != prevLogTerm)
+                        {
+                            condition2Satisfied = false;
+                        }
 
-                }
-                if (condition2Satisfied)
-                {
-                    /*******************
-                     * LOG IS ACCEPTED *
-                     *******************/
-                    leaderAddress = heartBeat->getLeaderAddress();
-                    int newEntryIndex = heartBeat->getEntry().entryLogIndex;
-                    // CASE A: heartbeat DOES NOT CONTAIN ANY ENTRY, the follower
-                    //         replies to confirm consistency with leader's log
-                    if (heartBeat->getEmpty())
-                    {
-                        if (leaderCommit > commitIndex)
-                        {
-                            commitIndex = min(leaderCommit, prevLogIndex); // no new entries in the message: we can guarantee consistency up to prevLogIndex
-                        }
-                        acceptLog(leaderAddress, prevLogIndex);
                     }
-                    else
+                    if (condition2Satisfied)
                     {
-                        // CASE B: heartbeat delivers a new entry for follower's log
-                        // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
-                        // No entry at newEntryIndex, simply append the new entry
-                        if (lastLogIndex < newEntryIndex)
+                        /*******************
+                         * LOG IS ACCEPTED *
+                         *******************/
+                        leaderAddress = heartBeat->getLeaderAddress();
+                        int newEntryIndex = heartBeat->getEntry().entryLogIndex;
+                        // CASE A: heartbeat DOES NOT CONTAIN ANY ENTRY, the follower
+                        //         replies to confirm consistency with leader's log
+                        if (heartBeat->getEmpty())
                         {
-                            logEntries.push_back(heartBeat->getEntry());
-                        }
-                        // @ensure (3): if an existing entry conflicts with a new one (same index but different terms),
-                        //              delete the existing entry and all that follow it
-                        // Conflicting entry at newEntryIndex, delete the last entries up to newEntryIndex, then append the new entry
-                        else if (logEntries[newEntryIndex].entryTerm != term)
-                        {
-                            int to_erase = logSize - newEntryIndex;
-                            logEntries.erase(logEntries.end() - to_erase, logEntries.end());
-                            logEntries.push_back(heartBeat->getEntry());
-                        }
-                        // client request index = index of last the entry. Ignore NOPs
-                        if (clientAddr != NO_CLIENT)
-                        {
-                            lastRequestFromClient = getLastRequest(clientAddr);
-                            if(lastRequestFromClient == nullptr)
+                            if (leaderCommit > commitIndex)
                             {
-                                lastRequestFromClient = addNewRequestEntry(clientAddr);
+                                commitIndex = min(leaderCommit, prevLogIndex); // no new entries in the message: we can guarantee consistency up to prevLogIndex
                             }
-                            lastRequestFromClient->lastLoggedIndex = logEntries.size() - 1;
+                            acceptLog(leaderAddress, prevLogIndex);
                         }
-                        // CONFIGURATION CHANGE
-                        // ADD SERVER
-                        int toAdd = heartBeat->getEntry().addressServerToAdd;
-                        if(toAdd >= 0 && !(*find(configuration.begin(), configuration.end(), toAdd) == toAdd))
+                        else
                         {
-                            configuration.push_back(heartBeat->getEntry().addressServerToAdd);
-                            // if a new server arrives for the first time, then extend nextIndex and matchIndex
-                            if(not(heartBeat->getEntry().operandValue < nextIndex.size()))
+                            // CASE B: heartbeat delivers a new entry for follower's log
+                            // @ensure CONSISTENCY WITH SEVER LOG UP TO prevLogIndex
+                            // No entry at newEntryIndex, simply append the new entry
+                            if (lastLogIndex < newEntryIndex)
                             {
-                                nextIndex.push_back(0);
-                                matchIndex.push_back(-1);
+                                logEntries.push_back(heartBeat->getEntry());
                             }
-                            if(serverState == NON_VOTING_MEMBER && heartBeat->getEntry().addressServerToAdd == networkAddress)
+                            // @ensure (3): if an existing entry conflicts with a new one (same index but different terms),
+                            //              delete the existing entry and all that follow it
+                            // Conflicting entry at newEntryIndex, delete the last entries up to newEntryIndex, then append the new entry
+                            else if (logEntries[newEntryIndex].entryTerm != term)
+                            {
+                                int to_erase = logSize - newEntryIndex;
+                                logEntries.erase(logEntries.end() - to_erase, logEntries.end());
+                                logEntries.push_back(heartBeat->getEntry());
+                            }
+                            // client request index = index of last the entry. Ignore NOPs
+                            if (clientAddr != NO_CLIENT)
+                            {
+                                lastRequestFromClient = getLastRequest(clientAddr);
+                                if(lastRequestFromClient == nullptr)
+                                {
+                                    lastRequestFromClient = addNewRequestEntry(clientAddr);
+                                }
+                                lastRequestFromClient->lastLoggedIndex = logEntries.size() - 1;
+                            }
+                            // CONFIGURATION CHANGE
+                            // ADD SERVER
+                            int toAdd = heartBeat->getEntry().addressServerToAdd;
+                            if(toAdd >= 0 && !(*find(configuration.begin(), configuration.end(), toAdd) == toAdd))
+                            {
+                                configuration.push_back(heartBeat->getEntry().addressServerToAdd);
+                                // if a new server arrives for the first time, then extend nextIndex and matchIndex
+                                if(not(heartBeat->getEntry().operandValue < nextIndex.size()))
+                                {
+                                    nextIndex.push_back(0);
+                                    matchIndex.push_back(-1);
+                                }
+                            }
+                            // REMOVE SERVER
+                            else if (heartBeat->getEntry().addressServerToRemove >= 0)
+                            {
+                                int toRemove = heartBeat->getEntry().addressServerToRemove;
+                                configuration.erase(remove(configuration.begin(), configuration.end(), toRemove), configuration.end());
+                            }
+
+                            if(serverState == NON_VOTING_MEMBER && heartBeat->getLeaderCommit() == catchUpTargetIndex)
                             {
                                 // become follower
                                 stepdown(heartBeat->getLeaderCurrentTerm());
                             }
-
-                        }
-                        // REMOVE SERVER
-                        else if (heartBeat->getEntry().addressServerToRemove >= 0)
-                        {
-                            int toRemove = heartBeat->getEntry().addressServerToRemove;
-                            configuration.erase(remove(configuration.begin(), configuration.end(), toRemove), configuration.end());
-                        }
-                        /* NOTE: if a replica receives the same entry twice, it simply ignores the second one and sends an ACK.
-                         * @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
-                         * index of last */
-                        acceptLog(leaderAddress, newEntryIndex);
-                        if (leaderCommit > commitIndex)
-                        {
-                            commitIndex = min(leaderCommit, newEntryIndex);
+                            /* NOTE: if a replica receives the same entry twice, it simply ignores the second one and sends an ACK.
+                             * @ensure (5) If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+                             * index of last */
+                            acceptLog(leaderAddress, newEntryIndex);
+                            if (leaderCommit > commitIndex)
+                            {
+                                commitIndex = min(leaderCommit, newEntryIndex);
+                            }
                         }
                     }
-                }
-                else
-                {
-                    rejectLog(leaderAddress);
-                    restartCountdown();
-                }
-            }
-            startAcceptVoteRequestCountdown();
-            restartCountdown();
-        }
-
-        ////
-        // RECEIVED RESPONSE FROM A FOLLOWER
-        if (heartBeatResponse != nullptr)
-        {
-            int followerAddr = heartBeatResponse->getFollowerAddress();
-            int followerIndex = getIndex(followerAddr);
-            int followerLogLength = heartBeatResponse->getLogLength();
-            int followerMatchIndex = heartBeatResponse->getMatchIndex();
-            if (heartBeatResponse->getSucceded())
-            {
-                // heartBeat accepted
-                matchIndex[followerIndex] = followerMatchIndex;
-                nextIndex[followerIndex] = matchIndex[followerIndex] + 1;
-
-                // catch up phase round ends
-                if (catchUpPhaseRunning && followerAddr == changingServerEntry.addressServerToAdd && matchIndex[followerIndex] == catchUpTargetIndex)
-                {
-                    endCatchUpRound();
-                }
-            }
-            else
-            {
-                // heartBeat rejected
-                if (followerLogLength < nextIndex[followerIndex])
-                {
-                    nextIndex[followerIndex] = followerLogLength;
-                }
-                else
-                {
-                    if (nextIndex[followerIndex] > 0)
+                    else
                     {
-                        nextIndex[followerIndex] = nextIndex[followerIndex] - 1;
+                        rejectLog(leaderAddress);
+                        restartCountdown();
                     }
                 }
+                startAcceptVoteRequestCountdown();
+                restartCountdown();
             }
-            updateCommitIndexOnLeader();
-            startAcceptVoteRequestCountdown();
-        }
 
-        ////
-        // SUFFICIENT TIME IS PASSED, VOTE REQUESTS CAN BE ACCEPTED
-        if (msg == minElectionTimeoutExpired)
-        {
-            acceptVoteRequest = true;
-        }
-
-        ////
-        // APPLY CHANGES TO FSM BY EXECUTING OPERATIONS IN THE LOG
-        if (msg == applyChangesMsg)
-        {
-            int applyNextIndex;
-            if(lastApplied < commitIndex)
+            ////
+            // RECEIVED RESPONSE FROM A FOLLOWER
+            if (heartBeatResponse != nullptr)
             {
-                for (applyNextIndex = lastApplied + 1 ; commitIndex > lastApplied; applyNextIndex++)
+                int followerAddr = heartBeatResponse->getFollowerAddress();
+                int followerIndex = getIndex(followerAddr);
+                int followerLogLength = heartBeatResponse->getLogLength();
+                int followerMatchIndex = heartBeatResponse->getMatchIndex();
+                if (heartBeatResponse->getSucceded())
                 {
-                    log_entry nextToApply = logEntries[applyNextIndex];
-                    updateState(nextToApply);
-                    // update table, but ignore the NOP
-                    if(nextToApply.clientAddress != NO_CLIENT)
-                        getLastRequest(nextToApply.clientAddress)->lastAppliedSerial = nextToApply.serialNumber;
-                    lastApplied++;
+                    // heartBeat accepted
+                    matchIndex[followerIndex] = followerMatchIndex;
+                    nextIndex[followerIndex] = matchIndex[followerIndex] + 1;
+
+                    // catch up phase round ends
+                    if (catchUpPhaseRunning && followerAddr == changingServerEntry.addressServerToAdd && matchIndex[followerIndex] == catchUpTargetIndex)
+                    {
+                        endCatchUpRound();
+                    }
                 }
-            }
-            applyChangesMsg = new cMessage("Apply changes to State Machine");
-            scheduleAt(simTime() + applyChangesPeriod, applyChangesMsg);
-        }
-
-        ////
-        // LOG MESSAGE REQUEST RECEIVED, it is ignored only if leader transfer process is going on
-        if (logMessage != nullptr && !leaderTransferPhase && leaderAddress >= 0)
-        {
-            int serialNumber = logMessage->getSerialNumber();
-            int clientAddress = logMessage->getClientAddress();
-            bool alreadyReceived = false;
-            last_req* lastReqHashEntry = getLastRequest(clientAddress);
-
-            if (lastReqHashEntry != nullptr)
-            {
-                int lastSerial = lastReqHashEntry->lastArrivedSerial;
-                int index = lastReqHashEntry->lastLoggedIndex;
-
-                if(lastSerial >= serialNumber)
+                else
                 {
-                    alreadyReceived = true;
+                    if (heartBeatResponse->getTerm() > currentTerm)
+                    {
+                        cancelEvent(heartBeatsReminder);
+                        cancelEvent(electionTimeoutExpired);
+                        currentTerm = heartBeatResponse->getTerm();
+                        electionTimeoutExpired = new cMessage("START ELECTION NOW TO BREAK A STUCK PHASE");
+                        startNewElection(false);
+                    }
+                    else if (followerLogLength < nextIndex[followerIndex])
+                    {
+                        // heartBeat rejected
+                        nextIndex[followerIndex] = followerLogLength;
+                    }
+                    else
+                    {
+                        if (nextIndex[followerIndex] > 0)
+                        {
+                            nextIndex[followerIndex] = nextIndex[followerIndex] - 1;
+                        }
+                    }
+                }
+                updateCommitIndexOnLeader();
+                startAcceptVoteRequestCountdown();
+            }
+
+            ////
+            // SUFFICIENT TIME IS PASSED, VOTE REQUESTS CAN BE ACCEPTED
+            if (msg == minElectionTimeoutExpired)
+            {
+                acceptVoteRequest = true;
+            }
+
+            ////
+            // APPLY CHANGES TO FSM BY EXECUTING OPERATIONS IN THE LOG
+            if (msg == applyChangesMsg)
+            {
+                int applyNextIndex;
+                if(lastApplied < commitIndex)
+                {
+                    for (applyNextIndex = lastApplied + 1 ; commitIndex > lastApplied; applyNextIndex++)
+                    {
+                        log_entry nextToApply = logEntries[applyNextIndex];
+                        updateState(nextToApply);
+                        // update table, but ignore the NOP
+                        if(nextToApply.clientAddress != NO_CLIENT)
+                            getLastRequest(nextToApply.clientAddress)->lastAppliedSerial = nextToApply.serialNumber;
+                        lastApplied++;
+                    }
+                }
+                applyChangesMsg = new cMessage("Apply changes to State Machine");
+                scheduleAt(simTime() + applyChangesPeriod, applyChangesMsg);
+            }
+
+            ////
+            // LOG MESSAGE REQUEST RECEIVED, it is ignored only if leader transfer process is going on
+            if (logMessage != nullptr && !leaderTransferPhase && leaderAddress >= 0)
+            {
+                int serialNumber = logMessage->getSerialNumber();
+                int clientAddress = logMessage->getClientAddress();
+                bool alreadyReceived = false;
+                last_req* lastReqHashEntry = getLastRequest(clientAddress);
+
+                if (lastReqHashEntry != nullptr)
+                {
+                    int lastSerial = lastReqHashEntry->lastArrivedSerial;
+                    // verify whether the entry was already received or not
+                    if(lastSerial >= serialNumber)
+                    {
+                        alreadyReceived = true;
+                    }
+                }
+                else
+                {
+                    // first message from the client: add an entry to the table
+                    lastReqHashEntry = addNewRequestEntry(clientAddress);
+                }
+                lastReqHashEntry->lastArrivedSerial = logMessage->getSerialNumber();
+
+                if (alreadyReceived)
+                {
+                    int index = lastReqHashEntry->lastLoggedIndex;
+                    // message already received
                     if(index > commitIndex)
                     {
                         // NACK: request yet to commit
                         bubble("This request is already in the log, but it is still uncommitted");
                         sendResponseToClient(clientAddress, serialNumber, false, false);
                     }
-                    else if (logEntries[index].clientAddress == logMessage->getClientAddress())
+                    else if (logEntries[index].clientAddress == logMessage->getClientAddress() and logEntries[index].serialNumber >= serialNumber)
                     {
                         // ACK: request has already been committed
                         bubble("This request has already been committed!");
                         sendResponseToClient(clientAddress, serialNumber, true, false);
                     }
-                }
-            }
-            else
-            {
-                // first message from the client: add an entry to the table
-                lastReqHashEntry = addNewRequestEntry(clientAddress);
-            }
-            lastReqHashEntry->lastArrivedSerial = logMessage->getSerialNumber();
-
-            if(!alreadyReceived)
-            {
-                // Redirect to leader in case the message is received by a follower.
-                if (networkAddress != leaderAddress)
-                {
-                    sendResponseToClient(clientAddress, serialNumber, false, true);
+                    else if (networkAddress != leaderAddress)
+                    {
+                        // Redirect to leader in case the message is received by a follower.
+                        sendResponseToClient(clientAddress, serialNumber, false, true);
+                    }
                 }
                 else
                 {
-                    // once a log message is received a new log entry is added in the leader node
-                    log_entry newEntry;
-                    newEntry.clientAddress = logMessage->getClientAddress();
-                    newEntry.entryTerm = currentTerm;
-                    newEntry.operandName = logMessage->getOperandName();
-                    newEntry.operandValue = logMessage->getOperandValue();
-                    newEntry.operation = logMessage->getOperation();
-                    newEntry.serialNumber = logMessage->getSerialNumber();
-                    newEntry.addressServerToAdd = logMessage->getServerToAdd();
-                    newEntry.addressServerToRemove = logMessage->getServerToRemove();
-                    newEntry.entryLogIndex = logEntries.size();
-                    if (logMessage->getServerToRemove() < 0 and logMessage->getServerToAdd() < 0)
+                    // new message
+                    if (networkAddress != leaderAddress)
                     {
-                        // ordinary entry
-                        // update next index and match index for leader.
-                        nextIndex[getIndex(networkAddress)]++;
-                        matchIndex[getIndex(networkAddress)]++;
-                        logEntries.push_back(newEntry);
-                        // update last received index
-                        lastReqHashEntry->lastLoggedIndex = newEntry.entryLogIndex;
+                        // Redirect to leader in case the message is received by a follower.
+                        sendResponseToClient(clientAddress, serialNumber, false, true);
                     }
                     else
                     {
-                        // change configuration entry
-                        startMembershipChangeProcedure(newEntry);
+                        // once a log message is received a new log entry is added in the leader node
+                        log_entry newEntry;
+                        newEntry.clientAddress = logMessage->getClientAddress();
+                        newEntry.entryTerm = currentTerm;
+                        newEntry.operandName = logMessage->getOperandName();
+                        newEntry.operandValue = logMessage->getOperandValue();
+                        newEntry.operation = logMessage->getOperation();
+                        newEntry.serialNumber = logMessage->getSerialNumber();
+                        newEntry.addressServerToAdd = logMessage->getServerToAdd();
+                        newEntry.addressServerToRemove = logMessage->getServerToRemove();
+                        newEntry.entryLogIndex = logEntries.size();
+                        if (logMessage->getServerToRemove() < 0 and logMessage->getServerToAdd() < 0)
+                        {
+                            // ordinary entry
+                            // update next index and match index for leader.
+                            nextIndex[getIndex(networkAddress)]++;
+                            matchIndex[getIndex(networkAddress)]++;
+                            logEntries.push_back(newEntry);
+                            // update last received index
+                            lastReqHashEntry->lastLoggedIndex = newEntry.entryLogIndex;
+                        }
+                        else if (commitIndex >= 0  and logEntries[commitIndex].entryTerm == currentTerm)
+                        {
+                            // change configuration entry
+                            // but only accept the request if some entry has been committed in the current term
+                            startMembershipChangeProcedure(newEntry);
+                        }
+                        else
+                        {
+                            lastReqHashEntry->lastArrivedSerial--;
+                        }
                     }
                 }
             }
@@ -653,7 +706,7 @@ void Server::handleMessage(cMessage *msg)
 
         ////
         // FORCED TIMEOUT MESSAGE DUE TO LEADER TRANSFER
-        else if (timeOutnow != nullptr)
+        if (timeOutnow != nullptr)
         {
             leaderTransferPhase = true;
             log_entry rm_serv ;
@@ -662,16 +715,21 @@ void Server::handleMessage(cMessage *msg)
             rm_serv.serialNumber = timeOutnow->getSerialNumber();
             changingServerEntry = rm_serv;
             cancelEvent(electionTimeoutExpired);
-            electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-            scheduleAt(simTime(), electionTimeoutExpired);
+            startNewElection(true);
         }
 
         ////
         // ABORT LEADER TRANSFER PROCESS
-        else if (msg == leaderTransferFailed)
+        if (msg == leaderTransferFailed)
         {
+            bubble("LEADER TRANSFER FAILED");
+            EV << "Leader transfer failed\n";
             leaderTransferPhase = false;
             timeOutNowSent = false;
+            // before sending the NACK the leader decrement the value of the last request entry so that it can be processed again
+            last_req* lastReqHashEntry = getLastRequest(changingServerEntry.clientAddress);
+            lastReqHashEntry->lastArrivedSerial--;
+            // NACK
             int managerAddr = changingServerEntry.clientAddress;
             int serial = changingServerEntry.serialNumber;
             sendResponseToClient(managerAddr, serial, false, false);
@@ -791,7 +849,7 @@ void Server::sendResponseToClient(int clientAddress, int serialNumber, bool succ
         }
         else
         {
-            resp = new LogMessageResponse("WAIT");
+            resp = new LogMessageResponse("RETRY");
         }
     }
     resp->setClientAddress(clientAddress);
@@ -988,7 +1046,7 @@ void Server::stepdown(int newCurrentTerm)
     serverState = FOLLOWER;
     // alreadyVoted = false;
     electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
-    double randomTimeout = uniform(0.75, 1.25);
+    double randomTimeout = uniform(minElectionTimeout, maxElectionTimeout);
     scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
 }
 
@@ -1030,7 +1088,7 @@ last_req* Server::getLastRequest(int clientAddr)
 }
 
 void Server::refreshDisplay() const {
-    char buf[300];
+    char buf[180];
     string logEntriesFormat = "";
     int startIndex = lastApplied + 1;
     for (int index = startIndex; index < logEntries.size(); index++)
@@ -1057,6 +1115,8 @@ void Server::refreshDisplay() const {
 
 void Server::startMembershipChangeProcedure(log_entry changeConfigEntry)
 {
+    bubble("Received new membership chenge req");
+    EV << "TRYING CLUSTER MEMBERSHIP CHANGE\n";
     int toAdd = changeConfigEntry.addressServerToAdd;
     int toDel = changeConfigEntry.addressServerToRemove;
     if(toAdd >= 0)
@@ -1072,6 +1132,8 @@ void Server::startMembershipChangeProcedure(log_entry changeConfigEntry)
         catchUpPhaseRunning = true;
         catchUpRoundNumber = 0;
         catchUpTargetIndex = logEntries.size() - 1;
+        bubble("ROUND 0");
+        EV << "ROUND 0";
         catchUpRoundTimeout = new cMessage("Round timeout expired");
         scheduleAt(simTime() + maxElectionTimeout, catchUpRoundTimeout);
         cancelEvent(heartBeatsReminder);
@@ -1081,13 +1143,15 @@ void Server::startMembershipChangeProcedure(log_entry changeConfigEntry)
     {
         if(toDel == networkAddress)
         {
+            bubble("Try leader transfer");
+            EV << "LEADER TANSFER: MANAGER ASKED ME TO LEAVE THE CONFIGURATION\n";
             leaderTransferPhase = true;
             changingServerEntry = changeConfigEntry;
         }
         else
         {
-            EV << "Removing server" + to_string(getIndex(toDel));
-            configuration.erase(remove(configuration.begin(), configuration.end(), toDel));
+            EV << "Removing server" + to_string(getIndex(toDel)) + "\n";
+            configuration.erase(remove(configuration.begin(), configuration.end(), toDel), configuration.end());
             nextIndex[getIndex(networkAddress)]++;
             matchIndex[getIndex(networkAddress)]++;
             numberVotingMembers  = configuration.size();
@@ -1099,7 +1163,6 @@ void Server::startMembershipChangeProcedure(log_entry changeConfigEntry)
 void Server::configureServer(vector<int> initialConfiguration)
 {
     cancelEvent(electionTimeoutExpired);
-    int numClient = getParentModule()->par("numClient");
     configuration = initialConfiguration;
 
     serverState= NON_VOTING_MEMBER;
@@ -1125,6 +1188,7 @@ void Server::endCatchUpRound()
     {
         // increment the round number
         catchUpRoundNumber++;
+        EV << "START ROUND " + to_string(catchUpRoundNumber) + "\n";
         catchUpCountdownEnded = false;
         if (catchUpRoundNumber >= maxNumberRound)
         {
@@ -1132,6 +1196,9 @@ void Server::endCatchUpRound()
             catchUpPhaseRunning = false;
             catchUpRoundNumber = 0;
             // send NACK: unsuccessful catch up
+            // before sending the NACK the leader decrement the value of the last request entry so that it can be processed again
+            last_req* lastReqHashEntry = getLastRequest(changingServerEntry.clientAddress);
+            lastReqHashEntry->lastAppliedSerial--;
             sendResponseToClient(managerAddr, serial, false, false);
         }
         else
@@ -1140,7 +1207,6 @@ void Server::endCatchUpRound()
             catchUpTargetIndex = logEntries.size() - 1;
             catchUpRoundTimeout = new cMessage("Round timeout expired");
             scheduleAt(simTime() + maxElectionTimeout, catchUpRoundTimeout);
-
         }
 
     }
@@ -1150,14 +1216,51 @@ void Server::endCatchUpRound()
         cancelEvent(catchUpRoundTimeout);
         catchUpPhaseRunning = false;
         catchUpCountdownEnded = false;
-        int serverToAddNum = getIndex(changingServerEntry.addressServerToAdd);
         // SUCCESSFUL catch up phase.
-
         // START CLUSTER MEMBERSHIP PHASE
         changingServerEntry.entryLogIndex = logEntries.size();
         logEntries.push_back(changingServerEntry);
+        last_req* lastRequestFromClient = getLastRequest(changingServerEntry.clientAddress);
+        lastRequestFromClient->lastLoggedIndex = logEntries.size() - 1;
         configuration.push_back(changingServerEntry.addressServerToAdd);
     }
+}
+
+void Server::startNewElection(bool disruptPermitted)
+{
+    cancelEvent(heartBeatsReminder);
+    // New election needed
+    bubble("timeout expired, new election start");
+    cDisplayString &dispStr = getDisplayString();
+    dispStr.parse("i=device/server2,silver");
+    numberVoteReceived = 0;
+    currentTerm++;
+    serverState = CANDIDATE;
+    numberVoteReceived++;      // it goes to 1, the server vote for himself
+    // this->alreadyVoted = true; // each server can vote just one time per election; if the server is in a candidate state it vote for himself
+    lastVotedTerm = currentTerm;
+    // i set a new timeout range
+    electionTimeoutExpired = new cMessage("NewElectionTimeoutExpired");
+    double randomTimeout = uniform(minElectionTimeout, maxElectionTimeout);
+    scheduleAt(simTime() + randomTimeout, electionTimeoutExpired);
+
+    // send broadcast vote request to the switch
+    VoteRequest *voteRequest = new VoteRequest("voteRequest");
+    voteRequest->setCandidateAddress(networkAddress);
+    voteRequest->setCurrentTerm(currentTerm);
+    voteRequest->setDisruptLeaderPermission(disruptPermitted);
+    int lastLogIndex = logEntries.size() - 1;
+    voteRequest->setLastLogIndex(lastLogIndex);
+    if (!(lastLogIndex < 0))
+    {
+        voteRequest->setLastLogTerm(logEntries[lastLogIndex].entryTerm);
+    }
+    else
+    {
+        voteRequest->setLastLogTerm(0);
+    }
+    if(gate("gateServer$o", 0)->isConnected())
+        send(voteRequest, "gateServer$o", 0);
 }
 
 void Server::finish()

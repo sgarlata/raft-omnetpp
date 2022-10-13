@@ -23,6 +23,7 @@ class Switch : public cSimpleModule
 private:
     int numberOfServers;
     int numberOfClients;
+    double reliability;
 protected:
     virtual void initialize() override;
     virtual void handleMessage(cMessage *msg) override;
@@ -34,6 +35,7 @@ void Switch::initialize()
 {
     numberOfServers = getParentModule()->par("numServer");
     numberOfClients = getParentModule()->par("numClient");
+    reliability = getParentModule()->par("channelsReliability");
 }
 // here i redefine handleMessage method
 // invoked every time a message enters in the node
@@ -47,7 +49,6 @@ void Switch::handleMessage(cMessage *msg)
     LogMessageResponse *logMessageResponse = dynamic_cast<LogMessageResponse *>(msg);
     TimeOutNow *timeout = dynamic_cast<TimeOutNow *>(msg);
 
-    double reliability = par("channelsReliability");
     bool switchIsFaulty = false;
     if (uniform(0,1) > reliability)
         switchIsFaulty = true;
@@ -56,7 +57,7 @@ void Switch::handleMessage(cMessage *msg)
     if (switchIsFaulty)
     {
         bubble("A packet is lost!");
-        EV << "Lost message" + std::to_string(msg->getId());
+        EV << "Lost message " + std::to_string(msg->getId());
     }
 
     // PACKET IS CORRECTLY FORWARDED

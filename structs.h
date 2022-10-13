@@ -22,7 +22,7 @@ struct log_entry {
 struct last_req {
     int clientAddress;
     int lastArrivedSerial = 0;     // serial number of the last arrived from this client. It may either be in the log or not (change membership messages are stored later on)
-    int lastLoggedIndex = 0;       // index of the last entry added to the log
+    int lastLoggedIndex = -1;       // index of the last entry added to the log
     int lastAppliedSerial = 0;
 };
 

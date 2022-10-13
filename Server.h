@@ -46,7 +46,6 @@ private:
     cMessage *applyChangesMsg;
     cMessage *leaderTransferFailed;
     cMessage *minElectionTimeoutExpired; // a server starts accepting new vote requests only after a minimum timeout from the last heartbeat reception
-    cMessage *channelLinkProblem; // when i receive this message i remove/restore some link
     cMessage *catchUpRoundTimeout;
 
     enum stateEnum
@@ -83,9 +82,9 @@ private:
     double serverCrashProbability;
     double maxCrashDelay;
     double maxCrashDuration;
-    int minElectionTimeout;
-    int maxElectionTimeout;
-    int applyChangesPeriod;
+    double minElectionTimeout;
+    double maxElectionTimeout;
+    double applyChangesPeriod;
     double heartbeatsPeriod;
     const int NO_CLIENT = -1;
 
@@ -110,6 +109,7 @@ private:
     virtual void initialize() override;
 
     virtual void handleMessage(cMessage *msg) override;
+    virtual void startNewElection(bool disruptPermitted);
     virtual void sendResponseToClient(int clientAddress, int serialNumber, bool succeded, bool redirect);
     virtual void updateState(log_entry log);
     virtual void acceptLog(int leaderAddress, int matchIndex);
