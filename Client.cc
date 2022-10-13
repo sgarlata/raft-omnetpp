@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <omnetpp.h>
-#include "Ping_m.h"
 #include <algorithm>
 #include <list>
 #include <random>
@@ -49,6 +48,7 @@ private:
     cModule *Switch;
     double clientCrashProbability;
     double maxCrashDelay;
+    double clientMaxCrashDuration;
 
 
 protected:
@@ -82,6 +82,7 @@ void Client::initialize()
 
     clientCrashProbability = getParentModule()->par("clientsCrashProbability");
     maxCrashDelay = getParentModule()->par("clientsMaxCrashDelay");
+    clientMaxCrashDuration = getParentModule()->par("clientsMaxCrashDuration");
 
     scheduleNextCrash();
     // here expires the first timeout; so the first server with timeout expired sends the first leader election message
@@ -114,7 +115,7 @@ void Client::handleMessage(cMessage *msg)
         bubble("Client crash");
         // Schedule Recovery Message
         recoveryMsg = new cMessage("recoveryMsg");
-        double randomFailureTime = uniform(1, 2);
+        double randomFailureTime = uniform(0.1, clientMaxCrashDuration);
         EV << "\nClient will be down for about " + to_string(randomFailureTime) + " seconds\n";
         scheduleAt(simTime() + randomFailureTime, recoveryMsg);
     }

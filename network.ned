@@ -28,15 +28,31 @@ simple Server
 {
     parameters:
         @display("i=device/server2");
+ 		bool addedByManager = default(false);
+ 		int catchUpPhaseRoundDuration = default(2);
+ 		int maxNumberRound = default(5);
+ 		double minElectionTimeout = default(2);
+ 		double maxElectionTimeout = default(4);
+ 		double applyChangePeriod = default(1);
+ 		double heartbeatsPeriod = default(0.3);
     gates:
         inout gateServer[];
 }
+
+//this module represent the the entity that manages configuration changes
+simple ConfigurationManager
+{
+    parameters:
+        @display("i=abstract/penguin_l");
+    gates:
+        inout gateConfigurationManager[];
+}
+
 
 simple Switch
 {
     parameters:
         @display("i=device/switch");
-        double channelsReliability = default(0.9);
     gates:
         inout gateSwitch[];
 }
@@ -45,25 +61,28 @@ network Network
 {
     parameters:
         // initial number of clients
-        int numClient @prompt("Number of client") = default(1);
+        int numClient @prompt("Number of client") = default(2);
         // initial number of servers
-        int numServer @prompt("Number of server") = default(5);
+        int numServer @prompt("Number of server") = default(3);
         
         // client crash parameters
         double clientsCrashProbability = default(0.7);
         double clientsMaxCrashDelay = default(6);
-        double clientsMaxCrashDuration = default(10);
+        double clientsMaxCrashDuration = default(2);
         
         // server crash parameters
         double serverCrashProbability = default(0.7); // 0.001
         double serverMaxCrashDelay = default(20);
-        double serverMaxCrashDuration = default(20);
+        double serverMaxCrashDuration = default(3);
         
         double leaderCrashProbability = default(0.7);
-        double leaderMaxCrashDuration = default(10);
+        double leaderMaxCrashDuration = default(2);
         double dieAgainProbability = default(0.7);
         int activationlinkCrashClient = default(0);
         int activationlinkCrashServer = default(0);
+        
+        // Switch reliability
+        double channelsReliability = default(0.95);
         
         @display("bgb=896,364");
     types:
@@ -73,7 +92,7 @@ network Network
     submodules:
         client[numClient]: Client {
             parameters:
-                @display("i=,cyan;p=320,128");
+                @display("i=,cyan;");
         }
         
         server[numServer]: Server {
@@ -81,8 +100,11 @@ network Network
                 @display("i=,bronze;");
         }
         
+        configurationManager: ConfigurationManager {        		
+        }
+        
         switch: Switch {
-                @display("p=380,200");
+                @display("");
         }
     connections:
         
@@ -93,5 +115,7 @@ network Network
         for i=0..numClient-1 {
                 client[i].gateClient++ <--> myChannel <--> switch.gateSwitch++;
         }
+        
+        configurationManager.gateConfigurationManager++ <--> myChannel <--> switch.gateSwitch++;
         
 }

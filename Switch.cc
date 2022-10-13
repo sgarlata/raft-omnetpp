@@ -7,14 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <omnetpp.h>
-#include "Ping_m.h"
-#include <algorithm>
-#include <list>
 #include <random>
-#include <sstream>
-#include <chrono>
-#include "Ping_m.h"
-#include "LeaderElection_m.h"
 #include "VoteReply_m.h"
 #include "VoteRequest_m.h"
 #include "LogMessage_m.h"
@@ -30,9 +23,20 @@ class Switch : public cSimpleModule
 private:
     int numberOfServers;
     int numberOfClients;
+    double reliability;
+    VoteReply *voteReply;
+    VoteRequest *voteRequest;
+    HeartBeats *heartBeat;
+    HeartBeatResponse *heartBeatResponse;
+    LogMessage *logMessage;
+    LogMessageResponse *logMessageResponse;
+    TimeOutNow *timeout;
 protected:
     virtual void initialize() override;
+    virtual void finish() override;
     virtual void handleMessage(cMessage *msg) override;
+public:
+    virtual ~Switch();
 };
 
 Define_Module(Switch);
@@ -41,19 +45,20 @@ void Switch::initialize()
 {
     numberOfServers = getParentModule()->par("numServer");
     numberOfClients = getParentModule()->par("numClient");
+    reliability = getParentModule()->par("channelsReliability");
 }
 // here i redefine handleMessage method
 // invoked every time a message enters in the node
 void Switch::handleMessage(cMessage *msg)
 {
-    VoteReply *voteReply = dynamic_cast<VoteReply *>(msg);
-    VoteRequest *voteRequest = dynamic_cast<VoteRequest *>(msg);
-    HeartBeats *heartBeat = dynamic_cast<HeartBeats *>(msg);
-    HeartBeatResponse *heartBeatResponse = dynamic_cast<HeartBeatResponse *>(msg);
-    LogMessage *logMessage = dynamic_cast<LogMessage *>(msg);
-    LogMessageResponse *logMessageResponse = dynamic_cast<LogMessageResponse *>(msg);
-    TimeOutNow *timeout = dynamic_cast<TimeOutNow *>(msg);
-    double reliability = par("channelsReliability");
+    voteReply = dynamic_cast<VoteReply *>(msg);
+    voteRequest = dynamic_cast<VoteRequest *>(msg);
+    heartBeat = dynamic_cast<HeartBeats *>(msg);
+    heartBeatResponse = dynamic_cast<HeartBeatResponse *>(msg);
+    logMessage = dynamic_cast<LogMessage *>(msg);
+    logMessageResponse = dynamic_cast<LogMessageResponse *>(msg);
+    timeout = dynamic_cast<TimeOutNow *>(msg);
+
     bool switchIsFaulty = false;
     if (uniform(0,1) > reliability)
         switchIsFaulty = true;
@@ -62,6 +67,7 @@ void Switch::handleMessage(cMessage *msg)
     if (switchIsFaulty)
     {
         bubble("A packet is lost!");
+        EV << "Lost message " + std::to_string(msg->getId());
     }
 
     // PACKET IS CORRECTLY FORWARDED
@@ -128,4 +134,28 @@ void Switch::handleMessage(cMessage *msg)
         LogMessageResponse *responseForward = logMessageResponse->dup();
         send(responseForward, "gateSwitch$o", dest);
     }
+
 }
+
+Switch::~Switch()
+{
+    cancelAndDelete(voteReply);
+    cancelAndDelete(voteRequest);
+    cancelAndDelete(heartBeat);
+    cancelAndDelete(heartBeatResponse);
+    cancelAndDelete(logMessage);
+    cancelAndDelete(logMessageResponse);
+    cancelAndDelete(timeout);
+}
+
+void Switch::finish()
+{
+    cancelAndDelete(voteReply);
+    cancelAndDelete(voteRequest);
+    cancelAndDelete(heartBeat);
+    cancelAndDelete(heartBeatResponse);
+    cancelAndDelete(logMessage);
+    cancelAndDelete(logMessageResponse);
+    cancelAndDelete(timeout);
+}
+
